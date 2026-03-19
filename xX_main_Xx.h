@@ -101,10 +101,15 @@ static inline int xX_main_Xx(int argc, char *const argv[], const char *envp) {
     int i = optind;
     size_t p = 0;
     while (i < argc) {
-        strcpy(&argv_copy[p], argv[i]);
-        p += strlen(argv[i]) + 1;
+        const size_t arg_len = strlen(argv[i]) + 1;
+        if (p + arg_len > sizeof(argv_copy))
+            return _E2BIG;
+        memcpy(&argv_copy[p], argv[i], arg_len);
+        p += arg_len;
         i++;
     }
+    if (p >= sizeof(argv_copy))
+        return _E2BIG;
     argv_copy[p] = '\0';
     if (argv[optind] == NULL)
 	    return _ENOENT;
