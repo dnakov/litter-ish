@@ -250,6 +250,7 @@ syscall_t syscall_table[] = {
     [384] = (syscall_t) sys_arch_prctl,
     [422] = (syscall_t) syscall_silent_stub, // futex_time64
     [439] = (syscall_t) syscall_silent_stub, // faccessat2
+    [452] = (syscall_t) sys_fchmodat2,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

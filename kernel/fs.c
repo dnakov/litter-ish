@@ -42,6 +42,8 @@ int access_check(struct statbuf *stat, int check) {
 // TODO ENAMETOOLONG
 
 #define AT_EACCESS_ 0x200
+#define FCHMODAT2_ALLOWED_FLAGS_ (AT_SYMLINK_NOFOLLOW_ | AT_EMPTY_PATH_)
+
 dword_t sys_access(addr_t path_addr, dword_t mode) {
     return sys_faccessat(AT_FDCWD_, path_addr, mode, 0);
 }
@@ -842,16 +844,48 @@ dword_t sys_fchmod(fd_t f, dword_t mode) {
     return generic_fsetattr(fd, make_attr(mode, mode));
 }
 
-dword_t sys_fchmodat(fd_t at_f, addr_t path_addr, dword_t mode) {
+static dword_t sys_fchmodat_common(fd_t at_f, addr_t path_addr, dword_t mode, dword_t flags, bool is_fchmodat2) {
     char path[MAX_PATH];
     if (user_read_string(path_addr, path, sizeof(path)))
         return _EFAULT;
-    STRACE("fchmodat(%d, \"%s\", %o)", at_f, path, mode);
+    if (is_fchmodat2) {
+        STRACE("fchmodat2(%d, \"%s\", %o, 0x%x)", at_f, path, mode, flags);
+        if (flags & ~FCHMODAT2_ALLOWED_FLAGS_)
+            return _EINVAL;
+    } else {
+        STRACE("fchmodat(%d, \"%s\", %o)", at_f, path, mode);
+    }
     struct fd *at = at_fd(at_f);
     if (at == NULL)
         return _EBADF;
     mode &= ~S_IFMT;
-    return generic_setattrat(at, path, make_attr(mode, mode), true);
+
+    if (path[0] == '\0') {
+        if (!(flags & AT_EMPTY_PATH_))
+            return _ENOENT;
+        if (at_f == AT_FDCWD_)
+            return generic_setattrat(AT_PWD, ".", make_attr(mode, mode), true);
+        return generic_fsetattr(at, make_attr(mode, mode));
+    }
+
+    bool follow_links = !(flags & AT_SYMLINK_NOFOLLOW_);
+    if (!follow_links) {
+        struct statbuf statbuf = {};
+        int err = generic_statat(at, path, &statbuf, false);
+        if (err < 0)
+            return err;
+        if (S_ISLNK(statbuf.mode))
+            return _EOPNOTSUPP;
+    }
+    return generic_setattrat(at, path, make_attr(mode, mode), follow_links);
+}
+
+dword_t sys_fchmodat(fd_t at_f, addr_t path_addr, dword_t mode) {
+    return sys_fchmodat_common(at_f, path_addr, mode, 0, false);
+}
+
+dword_t sys_fchmodat2(fd_t at_f, addr_t path_addr, dword_t mode, dword_t flags) {
+    return sys_fchmodat_common(at_f, path_addr, mode, flags, true);
 }
 
 dword_t sys_chmod(addr_t path_addr, dword_t mode) {
