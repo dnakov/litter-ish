@@ -1,6 +1,8 @@
 #include <stdarg.h>
+#include <stdlib.h>
 #include <limits.h>
 #include <string.h>
+#include <time.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/file.h>
@@ -12,6 +14,7 @@
 #include "fs/fd.h"
 #include "fs/dev.h"
 #include "fs/inode.h"
+#include "fs/poll.h"
 #include "fs/real.h"
 #define ISH_INTERNAL
 #include "fs/fake.h"
@@ -20,8 +23,124 @@
 
 // this exists only to override readdir to fix the returned inode numbers
 static struct fd_ops fakefs_fdops;
+static struct fd_ops initctl_fdops;
+
+#define INITCTL_MODE (S_IFIFO | 0666)
+#define INITCTL_RUN_PATH "run/initctl"
+#define INITCTL_DEV_PATH "dev/initctl"
+#define INITCTL_RUN_INODE ((ino_t) 0x495348696e697401ULL)
+#define INITCTL_DEV_INODE ((ino_t) 0x495348696e697402ULL)
+
+static bool fakefs_initctl_info(const char *path, const char **virtual_path, ino_t *inode) {
+    while (*path == '/')
+        path++;
+    if (strcmp(path, INITCTL_RUN_PATH) == 0) {
+        if (virtual_path != NULL)
+            *virtual_path = INITCTL_RUN_PATH;
+        if (inode != NULL)
+            *inode = INITCTL_RUN_INODE;
+        return true;
+    }
+    if (strcmp(path, INITCTL_DEV_PATH) == 0) {
+        if (virtual_path != NULL)
+            *virtual_path = INITCTL_DEV_PATH;
+        if (inode != NULL)
+            *inode = INITCTL_DEV_INODE;
+        return true;
+    }
+    return false;
+}
+
+static void fakefs_initctl_statbuf(struct statbuf *stat, ino_t inode) {
+    dword_t now = (dword_t) time(NULL);
+    *stat = (struct statbuf) {
+        .inode = inode,
+        .mode = INITCTL_MODE,
+        .nlink = 1,
+        .uid = 0,
+        .gid = 0,
+        .blksize = 4096,
+        .atime = now,
+        .mtime = now,
+        .ctime = now,
+    };
+}
+
+static bool fakefs_is_initctl_fd(struct fd *fd) {
+    return fd->ops == &initctl_fdops;
+}
+
+static ssize_t initctl_read(struct fd *UNUSED(fd), void *UNUSED(buf), size_t UNUSED(bufsize)) {
+    return 0;
+}
+
+static ssize_t initctl_write(struct fd *UNUSED(fd), const void *UNUSED(buf), size_t bufsize) {
+    return bufsize;
+}
+
+static ssize_t initctl_pread(struct fd *UNUSED(fd), void *UNUSED(buf), size_t UNUSED(bufsize), off_t UNUSED(off)) {
+    return _ESPIPE;
+}
+
+static ssize_t initctl_pwrite(struct fd *UNUSED(fd), const void *UNUSED(buf), size_t UNUSED(bufsize), off_t UNUSED(off)) {
+    return _ESPIPE;
+}
+
+static off_t_ initctl_lseek(struct fd *UNUSED(fd), off_t_ UNUSED(off), int UNUSED(whence)) {
+    return _ESPIPE;
+}
+
+static int initctl_poll(struct fd *UNUSED(fd)) {
+    return POLL_READ | POLL_WRITE;
+}
+
+static int fakefs_close(struct fd *fd) {
+    if (fakefs_is_initctl_fd(fd)) {
+        free(fd->fs_data);
+        fd->fs_data = NULL;
+        return 0;
+    }
+    return realfs_close(fd);
+}
+
+static int fakefs_getpath(struct fd *fd, char *buf) {
+    if (fakefs_is_initctl_fd(fd) && fd->fs_data != NULL) {
+        snprintf(buf, MAX_PATH + 1, "%s", (char *) fd->fs_data);
+        return 0;
+    }
+    return realfs_getpath(fd, buf);
+}
+
+static struct fd *fakefs_open_initctl(const char *path, int flags) {
+    const char *virtual_path;
+    ino_t inode;
+    if (!fakefs_initctl_info(path, &virtual_path, &inode))
+        return ERR_PTR(_ENOENT);
+    if ((flags & (O_CREAT_ | O_EXCL_)) == (O_CREAT_ | O_EXCL_))
+        return ERR_PTR(_EEXIST);
+    if (flags & O_DIRECTORY_)
+        return ERR_PTR(_ENOTDIR);
+
+    struct fd *fd = fd_create(&initctl_fdops);
+    if (fd == NULL)
+        return ERR_PTR(_ENOMEM);
+    fd->real_fd = -1;
+    fd->dir = NULL;
+    fd->flags = flags;
+    fd->type = S_IFIFO;
+    fd->fake_inode = inode;
+    fakefs_initctl_statbuf(&fd->stat, inode);
+    fd->fs_data = strdup(virtual_path);
+    if (fd->fs_data == NULL) {
+        fd_close(fd);
+        return ERR_PTR(_ENOMEM);
+    }
+    return fd;
+}
 
 static struct fd *fakefs_open(struct mount *mount, const char *path, int flags, int mode) {
+    if (fakefs_initctl_info(path, NULL, NULL))
+        return fakefs_open_initctl(path, flags);
     struct fakefs_db *fs = &mount->fakefs;
     struct fd *fd = realfs.open(mount, path, flags, 0666);
     if (IS_ERR(fd))
@@ -185,6 +304,11 @@ static int fakefs_mknod(struct mount *mount, const char *path, mode_t_ mode, dev
 }
 
 static int fakefs_stat(struct mount *mount, const char *path, struct statbuf *fake_stat) {
+    ino_t initctl_inode;
+    if (fakefs_initctl_info(path, NULL, &initctl_inode)) {
+        fakefs_initctl_statbuf(fake_stat, initctl_inode);
+        return 0;
+    }
     struct fakefs_db *fs = &mount->fakefs;
     db_begin_read(fs);
     struct ish_stat ishstat;
@@ -206,6 +330,10 @@ static int fakefs_stat(struct mount *mount, const char *path, struct statbuf *fa
 }
 
 static int fakefs_fstat(struct fd *fd, struct statbuf *fake_stat) {
+    if (fakefs_is_initctl_fd(fd)) {
+        *fake_stat = fd->stat;
+        return 0;
+    }
     struct fakefs_db *fs = &fd->mount->fakefs;
     int err = realfs.fstat(fd, fake_stat);
     if (err < 0)
@@ -359,6 +487,16 @@ static struct fd_ops fakefs_fdops;
 static void __attribute__((constructor)) init_fake_fdops() {
     fakefs_fdops = realfs_fdops;
     fakefs_fdops.readdir = fakefs_readdir;
+    fakefs_fdops.close = fakefs_close;
+    initctl_fdops = (struct fd_ops) {
+        .read = initctl_read,
+        .write = initctl_write,
+        .pread = initctl_pread,
+        .pwrite = initctl_pwrite,
+        .lseek = initctl_lseek,
+        .poll = initctl_poll,
+        .close = fakefs_close,
+    };
 }
 
 static int fakefs_mount(struct mount *mount) {
@@ -410,13 +548,13 @@ const struct fs_ops fakefs = {
     .symlink = fakefs_symlink,
     .mknod = fakefs_mknod,
 
-    .close = realfs_close,
+    .close = fakefs_close,
     .stat = fakefs_stat,
     .fstat = fakefs_fstat,
     .flock = realfs_flock,
     .setattr = fakefs_setattr,
     .fsetattr = fakefs_fsetattr,
-    .getpath = realfs_getpath,
+    .getpath = fakefs_getpath,
     .utime = realfs_utime,
 
     .mkdir = fakefs_mkdir,
