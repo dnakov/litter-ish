@@ -3,7 +3,7 @@ build-ios-device/
 build-ios-sim-arm64/
 build-ios-sim-x86_64/
 build/
-embed/tests/ios_app/CodexISHSanity.xcodeproj/
+embed/tests/ios_app/LitterISHSanity.xcodeproj/
 build/
 xcuserdata/
 .floo

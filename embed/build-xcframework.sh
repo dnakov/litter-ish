@@ -1,17 +1,17 @@
 #!/bin/sh
-# Build codex_ish.xcframework from the three iOS slices.
+# Build litter_ish.xcframework from the three iOS slices.
 #
 # Prereqs:
 #   brew install meson ninja llvm lld libarchive
 #   Xcode Command Line Tools
 #
-# Output: build/codex_ish.xcframework in the iSH repo root.
+# Output: build/litter_ish.xcframework in the iSH repo root.
 
 set -eu
 
 cd "$(dirname "$0")/.."
 ISH_ROOT=$(pwd)
-OUT="$ISH_ROOT/build/codex_ish.xcframework"
+OUT="$ISH_ROOT/build/litter_ish.xcframework"
 BUILD_DIRS="build-ios-device build-ios-sim-arm64 build-ios-sim-x86_64"
 CROSS_DIR="$ISH_ROOT/embed/cross"
 
@@ -37,7 +37,7 @@ build_slice() {
 
 merge_slice() {
     build_dir="$1"
-    out="$build_dir/libcodex_ish.a"
+    out="$build_dir/liblitter_ish.a"
     echo "--> libtool -static -o $out"
     # Apple libtool merges multiple .a files into one. Use xcrun to pick
     # the Xcode toolchain copy so it handles Mach-O/bitcode correctly.
@@ -60,19 +60,19 @@ for d in $BUILD_DIRS; do merge_slice  "$d"; done
 SIM_DIR="$ISH_ROOT/build/ios-sim-fat"
 mkdir -p "$SIM_DIR"
 echo "--> lipo -create sim arm64 + x86_64"
-xcrun lipo -create -output "$SIM_DIR/libcodex_ish.a" \
-    "$ISH_ROOT/build-ios-sim-arm64/libcodex_ish.a" \
-    "$ISH_ROOT/build-ios-sim-x86_64/libcodex_ish.a"
+xcrun lipo -create -output "$SIM_DIR/liblitter_ish.a" \
+    "$ISH_ROOT/build-ios-sim-arm64/liblitter_ish.a" \
+    "$ISH_ROOT/build-ios-sim-x86_64/liblitter_ish.a"
 
 # --- Step 3: prepare a Headers/ dir for the xcframework
-HEADERS_DIR="$ISH_ROOT/build/codex_ish_headers"
+HEADERS_DIR="$ISH_ROOT/build/litter_ish_headers"
 rm -rf "$HEADERS_DIR"
 mkdir -p "$HEADERS_DIR"
 cp "$ISH_ROOT/embed/ish_embed.h" "$HEADERS_DIR/"
 
-# module.modulemap lets Swift consumers `import CodexISH` directly.
+# module.modulemap lets Swift consumers `import LitterISH` directly.
 cat >"$HEADERS_DIR/module.modulemap" <<'EOF'
-module CodexISH {
+module LitterISH {
     header "ish_embed.h"
     export *
 }
@@ -82,8 +82,8 @@ EOF
 rm -rf "$OUT"
 echo "--> xcodebuild -create-xcframework -> $OUT"
 xcrun xcodebuild -create-xcframework \
-    -library "$ISH_ROOT/build-ios-device/libcodex_ish.a" -headers "$HEADERS_DIR" \
-    -library "$SIM_DIR/libcodex_ish.a" -headers "$HEADERS_DIR" \
+    -library "$ISH_ROOT/build-ios-device/liblitter_ish.a" -headers "$HEADERS_DIR" \
+    -library "$SIM_DIR/liblitter_ish.a" -headers "$HEADERS_DIR" \
     -output "$OUT" >/dev/null
 
 echo

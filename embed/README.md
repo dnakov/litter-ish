@@ -8,7 +8,7 @@ After running the build scripts you get, in `<ish>/build/`:
 
 | Artifact | Purpose | Size |
 |---|---|---|
-| `codex_ish.xcframework` | Static library + headers. Slices: `ios-arm64`, `ios-arm64_x86_64-simulator`. Link this into your iOS target. | ~1-2 MB per slice |
+| `litter_ish.xcframework` | Static library + headers. Slices: `ios-arm64`, `ios-arm64_x86_64-simulator`. Link this into your iOS target. | ~1-2 MB per slice |
 | `alpine-fakefs/` | A pre-built fakefsified Alpine i386 rootfs (a `data/` dir plus `meta.db`). Consumer bundles this (or the tarball below) and copies it to a writable sandbox path at first launch. `ish_init` is pointed at `<sandbox>/alpine-fakefs/data`. | ~8 MB unpacked |
 | `alpine-fakefs.tar.gz` | Same content as a tarball, for consumers that prefer to ship a compressed blob and extract on first launch. | ~3 MB |
 
@@ -21,7 +21,7 @@ Build prereqs (one-time, macOS host):
 Then:
 
 ```sh
-./embed/build-xcframework.sh   # → build/codex_ish.xcframework
+./embed/build-xcframework.sh   # → build/litter_ish.xcframework
 ./embed/build-rootfs.sh        # → build/alpine-fakefs[.tar.gz]
 ```
 
@@ -62,7 +62,7 @@ Return codes: `ISH_OK` (0) on success, negative `ISH_E_*` values on failure (see
 ## Integration sketch (Swift/SwiftUI)
 
 ```swift
-import CodexISH  // from the xcframework's module.modulemap
+import LitterISH  // from the xcframework's module.modulemap
 
 // 1. First-launch: copy the bundled rootfs directory into a writable location.
 let fm = FileManager.default
@@ -110,4 +110,4 @@ PATH=/opt/homebrew/opt/llvm/bin:$PATH ninja embed/smoke_host
 
 ## Licensing
 
-iSH is GPLv3 with the App-Store additional permission in `LICENSE.IOS`. Any app that links `codex_ish.xcframework` becomes a derivative work and must itself be GPL-compatible (source disclosure to end users, license text shipped). See the repo root `LICENSE.md`.
+iSH is GPLv3 with the App-Store additional permission in `LICENSE.IOS`. Any app that links `litter_ish.xcframework` becomes a derivative work and must itself be GPL-compatible (source disclosure to end users, license text shipped). See the repo root `LICENSE.md`.

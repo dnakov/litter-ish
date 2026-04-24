@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct CodexISHSanityApp: App {
+struct LitterISHSanityApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -17,7 +17,7 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("CodexISH Sanity").font(.title).padding(.top)
+                Text("LitterISH Sanity").font(.title).padding(.top)
                 Text(status).font(.headline)
                 if !benchmark.isEmpty {
                     Text(benchmark)

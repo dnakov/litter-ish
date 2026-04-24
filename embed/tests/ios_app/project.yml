@@ -1,4 +1,4 @@
-name: CodexISHSanity
+name: LitterISHSanity
 options:
   bundleIdPrefix: app.ish.sanity
   deploymentTarget:
@@ -11,7 +11,7 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: "16.0"
 
 targets:
-  CodexISHSanity:
+  LitterISHSanity:
     type: application
     platform: iOS
     sources:
@@ -19,7 +19,7 @@ targets:
       - path: ../../../build/alpine-fakefs
         type: folder
     dependencies:
-      - framework: ../../../build/codex_ish.xcframework
+      - framework: ../../../build/litter_ish.xcframework
         embed: false
     info:
       path: Sources/Info.plist
@@ -31,7 +31,7 @@ targets:
           - UIInterfaceOrientationPortrait
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: app.ish.sanity.CodexISHSanity
+        PRODUCT_BUNDLE_IDENTIFIER: app.ish.sanity.LitterISHSanity
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO

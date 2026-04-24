@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the Alpine fakefs artifact that ships alongside codex_ish.xcframework.
+# Build the Alpine fakefs artifact that ships alongside litter_ish.xcframework.
 #
 # Inputs (env, optional):
 #   ALPINE_VERSION  default 3.19.1
