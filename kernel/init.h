@@ -10,5 +10,6 @@ int become_first_process(void);
 int become_new_init_child(void);
 int create_stdio(const char *file, int major, int minor);
 int create_piped_stdio(void);
+int create_piped_stdio_from_fds(int in_fd, int out_fd, int err_fd);
 
 #endif

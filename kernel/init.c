@@ -155,15 +155,19 @@ static struct fd *open_fd_from_actual_fd(int fd_no) {
     return fd;
 }
 
-int create_piped_stdio() {
-    if (!(current->files->files[0] = open_fd_from_actual_fd(STDIN_FILENO))) {
+int create_piped_stdio_from_fds(int in_fd, int out_fd, int err_fd) {
+    if (!(current->files->files[0] = open_fd_from_actual_fd(in_fd))) {
         return -1;
     }
-    if (!(current->files->files[1] = open_fd_from_actual_fd(STDOUT_FILENO))) {
+    if (!(current->files->files[1] = open_fd_from_actual_fd(out_fd))) {
         return -1;
     }
-    if (!(current->files->files[2] = open_fd_from_actual_fd(STDERR_FILENO))) {
+    if (!(current->files->files[2] = open_fd_from_actual_fd(err_fd))) {
         return -1;
     }
     return 0;
+}
+
+int create_piped_stdio() {
+    return create_piped_stdio_from_fds(STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO);
 }
