@@ -1,0 +1,39 @@
+name: CodexISHSanity
+options:
+  bundleIdPrefix: app.ish.sanity
+  deploymentTarget:
+    iOS: "16.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    ENABLE_BITCODE: NO
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+
+targets:
+  CodexISHSanity:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../../../build/alpine-fakefs
+        type: folder
+    dependencies:
+      - framework: ../../../build/codex_ish.xcframework
+        embed: false
+    info:
+      path: Sources/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ish.sanity.CodexISHSanity
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        OTHER_LDFLAGS: "-lsqlite3"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/BridgingHeader.h
