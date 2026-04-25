@@ -419,6 +419,9 @@ ish_instance_t *ish_init(const char *rootfs_path, const char *workdir) {
     size_t argv_len = pack_args(argv_buf, sizeof(argv_buf), argv_items, 2);
     if (argv_len == (size_t)-1) goto fail;
 
+    // Minimal universal env — enough to boot /bin/sh as a working shell.
+    // Embedders should layer policy (LANG, PAGER, EDITOR, app-specific vars)
+    // by sending `export FOO=bar` through ish_run after init.
     const char *envp_items[] = {
         "HOME=/root",
         "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
