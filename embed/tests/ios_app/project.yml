@@ -16,7 +16,7 @@ targets:
     platform: iOS
     sources:
       - path: Sources
-      - path: ../../../build/alpine-fakefs
+      - path: ../../../build/fs
         type: folder
     dependencies:
       - framework: ../../../build/litter_ish.xcframework

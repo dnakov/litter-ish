@@ -7,7 +7,7 @@ name: Release litter-ish artifacts
 # Trigger: push a `v*` tag (e.g. `v0.1.0`). Each tag publishes a GitHub
 # release with three assets:
 #   - litter_ish.xcframework.tar.gz
-#   - alpine-fakefs.tar.gz
+#   - fs.tar.gz
 #   - SHA256SUMS
 
 on:
@@ -31,7 +31,7 @@ jobs:
       - name: Install build dependencies
         run: brew install meson ninja sqlite jq llvm lld libarchive
 
-      - name: Build alpine-fakefs.tar.gz
+      - name: Build fs.tar.gz
         run: ./embed/build-rootfs.sh
 
       - name: Build litter_ish.xcframework
@@ -43,15 +43,15 @@ jobs:
           tar -czf litter_ish.xcframework.tar.gz litter_ish.xcframework
           shasum -a 256 \
               litter_ish.xcframework.tar.gz \
-              alpine-fakefs.tar.gz \
+              fs.tar.gz \
               > SHA256SUMS
-          ls -lh litter_ish.xcframework.tar.gz alpine-fakefs.tar.gz SHA256SUMS
+          ls -lh litter_ish.xcframework.tar.gz fs.tar.gz SHA256SUMS
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             build/litter_ish.xcframework.tar.gz
-            build/alpine-fakefs.tar.gz
+            build/fs.tar.gz
             build/SHA256SUMS
           generate_release_notes: true

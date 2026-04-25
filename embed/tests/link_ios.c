@@ -8,7 +8,7 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
 
-    ish_instance_t *ish = ish_init("/does-not-exist/alpine-fakefs/data", "/");
+    ish_instance_t *ish = ish_init("/does-not-exist/fs/data", "/");
     if (ish == NULL) return 1;
 
     uint8_t *out = NULL;

@@ -9,8 +9,8 @@ After running the build scripts you get, in `<ish>/build/`:
 | Artifact | Purpose | Size |
 |---|---|---|
 | `litter_ish.xcframework` | Static library + headers. Slices: `ios-arm64`, `ios-arm64_x86_64-simulator`. Link this into your iOS target. | ~1-2 MB per slice |
-| `alpine-fakefs/` | A pre-built fakefsified Alpine i386 rootfs (a `data/` dir plus `meta.db`). Consumer bundles this (or the tarball below) and copies it to a writable sandbox path at first launch. `ish_init` is pointed at `<sandbox>/alpine-fakefs/data`. | ~8 MB unpacked |
-| `alpine-fakefs.tar.gz` | Same content as a tarball, for consumers that prefer to ship a compressed blob and extract on first launch. | ~3 MB |
+| `fs/` | A pre-built fakefsified Alpine i386 rootfs (a `data/` dir plus `meta.db`). Consumer bundles this (or the tarball below) and copies it to a writable sandbox path at first launch. `ish_init` is pointed at `<sandbox>/fs/data`. | ~8 MB unpacked |
+| `fs.tar.gz` | Same content as a tarball, for consumers that prefer to ship a compressed blob and extract on first launch. | ~3 MB |
 
 ## Building
 
@@ -22,7 +22,7 @@ Then:
 
 ```sh
 ./embed/build-xcframework.sh   # → build/litter_ish.xcframework
-./embed/build-rootfs.sh        # → build/alpine-fakefs[.tar.gz]
+./embed/build-rootfs.sh        # → build/fs[.tar.gz]
 ```
 
 Override `ALPINE_VERSION` to pin a different minirootfs (default `3.19.1`).
@@ -68,9 +68,9 @@ import LitterISH  // from the xcframework's module.modulemap
 let fm = FileManager.default
 let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask,
                         appropriateFor: nil, create: true)
-let rootfsDest = caches.appendingPathComponent("alpine-fakefs")
+let rootfsDest = caches.appendingPathComponent("fs")
 if !fm.fileExists(atPath: rootfsDest.path) {
-    let src = Bundle.main.url(forResource: "alpine-fakefs", withExtension: nil)!
+    let src = Bundle.main.url(forResource: "fs", withExtension: nil)!
     try fm.copyItem(at: src, to: rootfsDest)
 }
 
@@ -104,8 +104,8 @@ defer { if let p = outBytes { ish_free(p) } }
 meson setup build-host
 cd build-host
 PATH=/opt/homebrew/opt/llvm/bin:$PATH ninja embed/smoke_host
-../embed/build-rootfs.sh   # one-time; produces build/alpine-fakefs/
-./embed/smoke_host ../build/alpine-fakefs/data
+../embed/build-rootfs.sh   # one-time; produces build/fs/
+./embed/smoke_host ../build/fs/data
 ```
 
 ## Licensing

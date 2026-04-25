@@ -10,8 +10,8 @@
 # the last Node version that runs end-to-end on iSH. See ish-app/ish#2335.
 #
 # Outputs (in <repo>/build/):
-#   alpine-fakefs/         directory the consumer bundles or copies into sandbox
-#   alpine-fakefs.tar.gz   convenience tarball of the same directory
+#   fs/         directory the consumer bundles or copies into sandbox
+#   fs.tar.gz   convenience tarball of the same directory
 
 set -eu
 
@@ -24,8 +24,8 @@ TARBALL_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_MAJOR}/releases/x86
 
 mkdir -p "$BUILD"
 TARBALL="$BUILD/alpine-minirootfs-${ALPINE_VERSION}.tar.gz"
-ROOTFS_DIR="$BUILD/alpine-fakefs"
-ROOTFS_TGZ="$BUILD/alpine-fakefs.tar.gz"
+ROOTFS_DIR="$BUILD/fs"
+ROOTFS_TGZ="$BUILD/fs.tar.gz"
 
 # Need the host fakefsify binary; ensure the host meson build exists.
 HOST_BUILD="$BUILD/host-fakefsify"
@@ -51,6 +51,6 @@ sqlite3 "$ROOTFS_DIR/meta.db" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null
 rm -f "$ROOTFS_DIR/meta.db-shm" "$ROOTFS_DIR/meta.db-wal"
 
 echo "--> tar -czf $ROOTFS_TGZ"
-tar -czf "$ROOTFS_TGZ" -C "$BUILD" alpine-fakefs
+tar -czf "$ROOTFS_TGZ" -C "$BUILD" fs
 
 du -sh "$ROOTFS_DIR" "$ROOTFS_TGZ"

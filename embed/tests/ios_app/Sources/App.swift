@@ -115,10 +115,10 @@ struct ContentView: View {
         let fm = FileManager.default
         let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask,
                                 appropriateFor: nil, create: true)
-        let dest = caches.appendingPathComponent("alpine-fakefs")
+        let dest = caches.appendingPathComponent("fs")
         if fm.fileExists(atPath: dest.path) { return dest }
 
-        guard let src = Bundle.main.url(forResource: "alpine-fakefs", withExtension: nil) else {
+        guard let src = Bundle.main.url(forResource: "fs", withExtension: nil) else {
             throw NSError(domain: "ish", code: -100,
                           userInfo: [NSLocalizedDescriptionKey: "rootfs not in bundle"])
         }
