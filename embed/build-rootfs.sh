@@ -1,5 +1,8 @@
 #!/bin/sh
-# Build the Alpine fakefs artifact that ships alongside litter_ish.xcframework.
+# Build the Alpine fakefs artifact that the `ish-embed-host` Rust crate
+# expects at runtime. The supervisor binary itself is embedded into the
+# crate via `include_bytes!` and dropped into the rootfs at boot, so this
+# script only needs to produce the base Alpine fakefs.
 #
 # Inputs (env, optional):
 #   ALPINE_VERSION  default 3.18.9

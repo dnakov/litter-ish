@@ -31,11 +31,8 @@ jobs:
           fetch-depth: 1
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - name: Pin Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
-
       - name: Install build dependencies
-        run: brew install meson ninja sqlite jq llvm lld libarchive
+        run: brew install meson ninja sqlite llvm lld libarchive
 
       - name: Build fs.tar.gz
         run: ./embed/build-rootfs.sh
