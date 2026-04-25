@@ -225,15 +225,10 @@ impl IshInstance {
         //     threads + the shared instance state, then read the READY
         //     frame to confirm the supervisor is alive and version-locked.
         let (writer_tx, writer_rx) = std::sync::mpsc::channel::<HostToSupervisor>();
-        // Re-allocate the host-side write fd to a number above 256 so it's
-        // well clear of the range iSH's emulator + supervisor allocate
-        // pipes/poll fds in. F_DUPFD finds the lowest free fd >= the floor.
-        let high_fd = unsafe { libc::fcntl(host_stdin_w.as_raw_fd(), libc::F_DUPFD, 256) };
-        if high_fd < 0 {
-            return Err(IshError::Io(std::io::Error::last_os_error()));
-        }
-        let host_stdin_w_for_writer = unsafe { OwnedFd::from_raw_fd(high_fd) };
-        drop(host_stdin_w); // close the original low-numbered fd
+        // The writer thread takes ownership of the host's write end. No dup
+        // — iSH's emulator shares the host's real-fd table, and adding
+        // extra dups created confusing failures during the macOS host smoke.
+        let host_stdin_w_for_writer = host_stdin_w;
 
         let inner = Arc::new(InstanceInner {
             next_reqid: AtomicU32::new(1),
