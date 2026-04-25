@@ -33,7 +33,9 @@ fn main() {
 
     // -- 1. iSH static libs via Meson ---------------------------------------
     let meson_build_dir = out_dir.join("meson-build");
-    run_meson(&ish_root, &meson_build_dir);
+    let target = env::var("TARGET").unwrap_or_default();
+    let cross_file = maybe_write_cross_file(&out_dir, &target);
+    run_meson(&ish_root, &meson_build_dir, cross_file.as_deref());
 
     println!(
         "cargo:rustc-link-search=native={}",
@@ -104,16 +106,33 @@ fn main() {
     println!("cargo:rustc-env=ISH_SUPERVISOR_BIN={}", staged.display());
 }
 
-fn run_meson(ish_root: &Path, build_dir: &Path) {
+fn run_meson(ish_root: &Path, build_dir: &Path, cross_file: Option<&Path>) {
     let configured_marker = build_dir.join("build.ninja");
     if !configured_marker.exists() {
         std::fs::create_dir_all(build_dir).unwrap();
-        let status = Command::new("meson")
-            .arg("setup")
+        let mut cmd = Command::new("meson");
+        cmd.arg("setup")
             .arg("--buildtype=release")
-            .arg("--default-library=static")
-            .arg(build_dir)
-            .arg(ish_root)
+            .arg("--default-library=static");
+        if let Some(cf) = cross_file {
+            cmd.arg("--cross-file").arg(cf);
+        }
+        cmd.arg(build_dir).arg(ish_root);
+        // The parent cargo build may have set CC/CFLAGS to target the
+        // outer Rust target (e.g. aarch64-apple-ios). Meson reads CC for
+        // the build_machine probe — leaving an iOS-targeted compiler
+        // there triggers "Executables created by c compiler … are not
+        // runnable." Clear the wrapper/compiler vars and let Meson
+        // rediscover the host toolchain. Our `[binaries]` section in the
+        // cross-file already pins the iOS-side compilers explicitly.
+        for var in [
+            "CC", "CXX", "AR", "RANLIB", "OBJC", "STRIP",
+            "CFLAGS", "CXXFLAGS", "LDFLAGS", "OBJCFLAGS",
+            "RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER",
+        ] {
+            cmd.env_remove(var);
+        }
+        let status = cmd
             .status()
             .expect("invoke meson — install via `brew install meson ninja`");
         if !status.success() {
@@ -131,6 +150,66 @@ fn run_meson(ish_root: &Path, build_dir: &Path) {
     if !status.success() {
         panic!("ninja build failed");
     }
+}
+
+/// For Apple-cross targets (iOS device, iOS simulators), write a Meson cross
+/// file that points at Xcode's clang with the right SDK + arch flags. Returns
+/// the path to the cross-file, or `None` for native builds (Meson autodetects
+/// the host toolchain just fine).
+fn maybe_write_cross_file(out_dir: &Path, target: &str) -> Option<PathBuf> {
+    let (sdk_platform, sdk_name, arch, min_flag, system, cpu_family, is_simulator) = match target
+    {
+        "aarch64-apple-ios"            => ("iPhoneOS",        "iPhoneOS",       "arm64",  "-mios-version-min=16.0",            "darwin", "aarch64", false),
+        "aarch64-apple-ios-sim"        => ("iPhoneSimulator", "iPhoneSimulator","arm64",  "-mios-simulator-version-min=16.0",  "darwin", "aarch64", true),
+        "x86_64-apple-ios"             => ("iPhoneSimulator", "iPhoneSimulator","x86_64", "-mios-simulator-version-min=16.0",  "darwin", "x86_64",  true),
+        // Host macs: no cross-file needed.
+        _ => return None,
+    };
+    let _ = sdk_name;
+    let _ = is_simulator;
+
+    let xcode_select = Command::new("xcode-select").arg("-p").output();
+    let developer_dir = match xcode_select {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        _ => "/Applications/Xcode.app/Contents/Developer".to_string(),
+    };
+
+    let sdk = format!(
+        "{developer_dir}/Platforms/{sdk_platform}.platform/Developer/SDKs/{sdk_platform}.sdk"
+    );
+    let xctool = format!(
+        "{developer_dir}/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+    );
+
+    let body = format!(
+        "[constants]\n\
+         sdk = '{sdk}'\n\
+         xctool = '{xctool}'\n\
+         arch = '-arch'\n\
+         cpu = '{arch}'\n\
+         min = '{min_flag}'\n\
+         \n\
+         [binaries]\n\
+         c    = [xctool + '/clang', '-isysroot', sdk, arch, cpu, min]\n\
+         objc = [xctool + '/clang', '-isysroot', sdk, arch, cpu, min]\n\
+         ar   = xctool + '/ar'\n\
+         strip = xctool + '/strip'\n\
+         \n\
+         [built-in options]\n\
+         c_link_args = ['-isysroot', sdk, '-arch', '{arch}', '{min_flag}']\n\
+         \n\
+         [host_machine]\n\
+         system = '{system}'\n\
+         cpu_family = '{cpu_family}'\n\
+         cpu = '{cpu_family}'\n\
+         endian = 'little'\n",
+    );
+
+    let cf = out_dir.join("meson-cross.ini");
+    std::fs::write(&cf, body).expect("write meson cross file");
+    Some(cf)
 }
 
 fn build_supervisor(supervisor_src: &Path, out_dir: &Path) -> PathBuf {
