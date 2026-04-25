@@ -1,0 +1,57 @@
+name: Release litter-ish artifacts
+
+# Builds the iOS-embeddable iSH static library + Alpine fakefs that
+# `litter` (https://github.com/dnakov/litter) consumes via
+# `apps/ios/scripts/download-litter-ish.sh`.
+#
+# Trigger: push a `v*` tag (e.g. `v0.1.0`). Each tag publishes a GitHub
+# release with three assets:
+#   - litter_ish.xcframework.tar.gz
+#   - alpine-fakefs.tar.gz
+#   - SHA256SUMS
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write  # needed to create releases
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Pin Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Install build dependencies
+        run: brew install meson ninja sqlite jq llvm lld libarchive
+
+      - name: Build alpine-fakefs.tar.gz
+        run: ./embed/build-rootfs.sh
+
+      - name: Build litter_ish.xcframework
+        run: ./embed/build-xcframework.sh
+
+      - name: Package xcframework
+        working-directory: build
+        run: |
+          tar -czf litter_ish.xcframework.tar.gz litter_ish.xcframework
+          shasum -a 256 \
+              litter_ish.xcframework.tar.gz \
+              alpine-fakefs.tar.gz \
+              > SHA256SUMS
+          ls -lh litter_ish.xcframework.tar.gz alpine-fakefs.tar.gz SHA256SUMS
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/litter_ish.xcframework.tar.gz
+            build/alpine-fakefs.tar.gz
+            build/SHA256SUMS
+          generate_release_notes: true
