@@ -4,11 +4,17 @@
 #include "kernel/elf.h"
 #include "kernel/vdso.h"
 
+// When VDSO_DATA_EXTERNAL is defined, `vdso_data` is provided by a separate
+// translation unit (e.g. a build.rs-generated shim that .incbin's the VDSO
+// from an out-of-tree path). The default/meson build path keeps the inline
+// .incbin below so nothing changes for existing consumers.
+#ifndef VDSO_DATA_EXTERNAL
 __asm__(".data\n"
         ".global vdso_data\n"
         "vdso_data:\n"
         ".incbin \"vdso/libvdso.so.elf\"\n"
         ".skip "str(VDSO_PAGES)" * (1 << 12) - (. - vdso_data)\n");
+#endif
 
 int vdso_symbol(const char *name) {
     struct elf_header *header = (void *) vdso_data;

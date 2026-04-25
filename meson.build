@@ -165,7 +165,9 @@ if get_option('kernel') == 'ish'
         executable('ish', ['main.c'], dependencies: ish)
     endif
 
-    subdir('embed')
+    # The embed library is now a Cargo workspace under embed/. Meson only
+    # builds the iSH static libs; the host crate's build.rs runs `meson
+    # setup` + `ninja libish.a libish_emu.a libfakefs.a` and consumes them.
 
 elif get_option('kernel') == 'linux'
     kernel_src = [

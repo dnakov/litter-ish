@@ -1,0 +1,16 @@
+# The supervisor only ever ships as an i386 Linux ELF that runs inside iSH.
+# Forcing the target here means `cargo build` in this directory does the right
+# thing without callers having to remember `--target`.
+[build]
+target = "i686-unknown-linux-musl"
+
+# Use rust-lld (ships with the toolchain) so this cross-builds on a macOS host
+# without `brew install musl-cross`. -Crelocation-model=static keeps the binary
+# fully static, matching the supervisor's ship-inside-fakefs constraint.
+[target.i686-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = [
+    "-Clink-self-contained=yes",
+    "-Crelocation-model=static",
+]
+

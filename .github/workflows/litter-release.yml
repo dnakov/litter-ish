@@ -1,12 +1,11 @@
-name: Release litter-ish artifacts
+name: Release ish-embed artifacts
 
-# Builds the iOS-embeddable iSH static library + Alpine fakefs that
-# `litter` (https://github.com/dnakov/litter) consumes via
-# `apps/ios/scripts/download-litter-ish.sh`.
+# Builds the Alpine fakefs that the `ish-embed-host` Rust crate ships
+# alongside. Litter consumes the crate as a path/git dep and the rootfs
+# as a runtime asset.
 #
 # Trigger: push a `v*` tag (e.g. `v0.1.0`). Each tag publishes a GitHub
-# release with three assets:
-#   - litter_ish.xcframework.tar.gz
+# release with two assets:
 #   - fs.tar.gz
 #   - SHA256SUMS
 
@@ -41,25 +40,17 @@ jobs:
       - name: Build fs.tar.gz
         run: ./embed/build-rootfs.sh
 
-      - name: Build litter_ish.xcframework
-        run: ./embed/build-xcframework.sh
-
-      - name: Package xcframework
+      - name: Hash the artifact
         working-directory: build
         run: |
-          tar -czf litter_ish.xcframework.tar.gz litter_ish.xcframework
-          shasum -a 256 \
-              litter_ish.xcframework.tar.gz \
-              fs.tar.gz \
-              > SHA256SUMS
-          ls -lh litter_ish.xcframework.tar.gz fs.tar.gz SHA256SUMS
+          shasum -a 256 fs.tar.gz > SHA256SUMS
+          ls -lh fs.tar.gz SHA256SUMS
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: |
-            build/litter_ish.xcframework.tar.gz
             build/fs.tar.gz
             build/SHA256SUMS
           generate_release_notes: true

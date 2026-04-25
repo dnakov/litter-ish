@@ -1,0 +1,31 @@
+[package]
+name        = "ish-embed-host"
+version     = "0.1.0"
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+description = "Async Rust API for embedding the iSH kernel and driving in-iSH processes."
+build       = "build.rs"
+
+[lib]
+name       = "ish_embed_host"
+crate-type = ["lib", "staticlib"]
+
+[dependencies]
+ish-embed-protocol = { path = "../protocol", features = ["std"] }
+serde      = { workspace = true, features = ["std"] }
+postcard   = { workspace = true, features = ["use-std"] }
+async-trait = "0.1"
+bytes       = "1"
+libc        = "0.2"
+parking_lot = "0.12"
+thiserror   = "1"
+tokio       = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "io-util"] }
+tracing     = "0.1"
+
+[build-dependencies]
+bindgen = "0.70"
+cc      = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

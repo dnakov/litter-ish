@@ -1,113 +1,96 @@
-# Embedding iSH as a library
+# `embed/` — async Rust embedding API for iSH
 
-This directory turns iSH from a standalone terminal app into a library that another iOS app can call to run shell commands. The library and rootfs are produced as two artifacts you vendor into the consuming app.
+This directory turns iSH into a Rust crate (`ish-embed-host`) that other Rust code links directly. The crate boots iSH's kernel, runs a small PID-1 supervisor inside it, and exposes an async API for spawning long-lived processes, reading their output incrementally, writing to their stdin, and signaling/terminating them. It is shaped to plug into [`codex-rs`](../) — both the legacy `codex_core::exec::set_ios_exec_hook` flow and `app-server`'s `ExecBackend` / `ExecProcess` trait.
 
-## Artifacts
+## Architecture
 
-After running the build scripts you get, in `<ish>/build/`:
-
-| Artifact | Purpose | Size |
-|---|---|---|
-| `litter_ish.xcframework` | Static library + headers. Slices: `ios-arm64`, `ios-arm64_x86_64-simulator`. Link this into your iOS target. | ~1-2 MB per slice |
-| `fs/` | A pre-built fakefsified Alpine i386 rootfs (a `data/` dir plus `meta.db`). Consumer bundles this (or the tarball below) and copies it to a writable sandbox path at first launch. `ish_init` is pointed at `<sandbox>/fs/data`. | ~8 MB unpacked |
-| `fs.tar.gz` | Same content as a tarball, for consumers that prefer to ship a compressed blob and extract on first launch. | ~3 MB |
-
-## Building
-
-Build prereqs (one-time, macOS host):
-- Xcode Command Line Tools
-- `brew install meson ninja llvm lld libarchive sqlite`
-
-Then:
-
-```sh
-./embed/build-xcframework.sh   # → build/litter_ish.xcframework
-./embed/build-rootfs.sh        # → build/fs[.tar.gz]
+```
+host process
+├── ish-embed-host        async Rust API; FFIs into iSH C kernel libs
+│   └── reader thread     reads framed responses from supervisor pipe
+│   └── writer thread     writes framed requests to supervisor pipe
+│
+iSH kernel pthread
+└── PID 1 = ish-supervisor          static i386 musl ELF, ~411 KB
+    ├── poll(2) loop
+    │   ├── stdin (request frames from host)
+    │   ├── SIGCHLD self-pipe (reap children)
+    │   └── per-session output fds (drain stdout/stderr/pty master)
+    └── child processes               one fork+execve per session
+        ├── /bin/sh -c "<cmd>"         own pgid, own stdio, own state
+        ├── /bin/cat (with pipe_stdin) host writes to its stdin
+        └── ...
 ```
 
-Override `ALPINE_VERSION` to pin a different minirootfs (default `3.19.1`).
+Each session is a separate `fork+execve` child of the supervisor, with its own process group. Cancelling sends `SIGKILL` to the pgid. Output is multiplexed back to the host with monotonic per-session `seq` numbers, matching `codex_exec_server::ProcessOutputChunk`'s shape.
 
-## Public API
+## Crates
 
-```c
-#include "ish_embed.h"
+| Crate | Role |
+|---|---|
+| `protocol/`  | `#![no_std] + alloc` postcard-encoded wire types shared by host and supervisor. `PROTOCOL_VERSION` is checked at handshake; mismatched binaries fail loudly. |
+| `supervisor/`| The PID-1 ELF. Static-linked i686 musl, no async runtime, single-threaded `poll(2)` loop. |
+| `host/`      | The async public API (`IshInstance`, `IshSession`, …). `build.rs` drives Meson + Ninja for the iSH C side and cross-builds the supervisor. |
 
-// One-time boot. Mounts the fakefs at `rootfs_path` (must end in .../data),
-// becomes init (PID 1), and execves /bin/sh on a dedicated kernel thread.
-// At most one instance per process lifetime.
-ish_instance_t *ish_init(const char *rootfs_path, const char *workdir);
+## Public API surface
 
-// Run a shell command. stdout + stderr are merged.
-int ish_run(ish_instance_t *ish,
-            const char *cmd,
-            const uint8_t *stdin_bytes, size_t stdin_len,
-            uint8_t **out_bytes, size_t *out_len,
-            int *exit_code);
+```rust
+let ish = IshInstance::boot(rootfs_path, Some(Path::new("/")))?;
 
-// Run argv-style (no shell word-splitting). envp is NULL-terminated
-// "KEY=VALUE" strings; pass NULL for the default environment.
-int ish_exec(ish_instance_t *ish,
-             const char *const *argv,
-             const char *const *envp,
-             const uint8_t *stdin_bytes, size_t stdin_len,
-             uint8_t **out_bytes, size_t *out_len,
-             int *exit_code);
+let session = ish.spawn(SpawnOpts::cmd(["/bin/echo", "hello"]))?;
+let read = session.read(Some(0), Some(64 * 1024), Some(2_000)).await?;
+//          ^^ codex's ReadParams { after_seq, max_bytes, wait_ms } shape
 
-void ish_free(void *p);
-void ish_shutdown(ish_instance_t *ish);
+session.write(b"some-stdin-bytes").await?;
+session.signal(libc::SIGINT).await?;
+session.terminate().await?;     // SIGKILL pgid
+
+// Codex `set_ios_exec_hook` drop-in:
+let (exit_code, output) = ish.run_oneshot(&argv, &cwd, &env, Some(timeout_ms));
 ```
 
-Return codes: `ISH_OK` (0) on success, negative `ISH_E_*` values on failure (see header).
+`IshSession::subscribe()` returns a `tokio::sync::broadcast::Receiver<SessionEvent>` for push-style consumption (`Opened` / `Output` / `Exited` / `Closed` / `Failed`), 1:1 with codex's `ExecProcessEvent`.
 
-## Integration sketch (Swift/SwiftUI)
+## Build prerequisites
 
-```swift
-import LitterISH  // from the xcframework's module.modulemap
+- Rust toolchain with the `i686-unknown-linux-musl` target installed (`rustup target add i686-unknown-linux-musl`). The supervisor cross-builds via `rust-lld`, which ships with rustup, so no host C cross-toolchain is needed.
+- Meson + Ninja (`brew install meson ninja` on macOS, apt on Linux).
+- LLVM's `clang` and `lld` for iSH's vdso step (`brew install llvm` on macOS — see `vdso/meson.build`).
+- A fakefs rootfs for testing. For dev builds the existing one at `<repo>/build/alpine-fakefs` works; production consumers ship `fs.tar.gz` produced by `build-rootfs.sh`.
 
-// 1. First-launch: copy the bundled rootfs directory into a writable location.
-let fm = FileManager.default
-let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask,
-                        appropriateFor: nil, create: true)
-let rootfsDest = caches.appendingPathComponent("fs")
-if !fm.fileExists(atPath: rootfsDest.path) {
-    let src = Bundle.main.url(forResource: "fs", withExtension: nil)!
-    try fm.copyItem(at: src, to: rootfsDest)
-}
+## Tests
 
-// 2. Boot the kernel. Pass the .../data subdir.
-let dataPath = rootfsDest.appendingPathComponent("data").path
-guard let ish = ish_init(dataPath, "/") else { fatalError("ish_init failed") }
+```bash
+# Unit tests (build pipeline + protocol roundtrips)
+cargo test -p ish-embed-protocol
+cargo test -p ish-embed-host --lib
 
-// 3. Run a command.
-var outBytes: UnsafeMutablePointer<UInt8>? = nil
-var outLen: Int = 0
-var exitCode: Int32 = 0
-let rc = ish_run(ish, "uname -a", nil, 0, &outBytes, &outLen, &exitCode)
-defer { if let p = outBytes { ish_free(p) } }
+# End-to-end against an existing rootfs (echo, exit codes, stdin pipe,
+# concurrent sessions, cancel via SIGKILL)
+ISH_TEST_ROOTFS=$PWD/../build/alpine-fakefs/data \
+    cargo test -p ish-embed-host --test smoke -- --test-threads=1
 ```
 
-## Constraints and gotchas
+Set `ISH_TRACE_FRAMES=1` to dump every host↔supervisor frame to stderr.
 
-- **One instance per process, permanently.** iSH's kernel uses `__thread current` and other per-process globals. After `ish_shutdown` the process should not call `ish_init` again.
-- **Serialized API.** `ish_run` and `ish_exec` are mutex-guarded — concurrent callers serialize. This matches the kernel's single-scheduler assumption; don't try to work around it.
-- **Architecture: i386 emulation.** All commands run through a threaded-code x86 interpreter. Expect 10–100× slower than equivalent native ARM code. Measure before committing to a heavy per-command workload.
-- **stdout and stderr are merged** into a single output buffer.
-- **Pre-set environment on the inner shell.** `HOME`, `PATH`, `USER`, `SHELL`, `TERM=dumb` are set at boot. Additional per-call env comes from `ish_exec`'s `envp`.
-- **Writable rootfs.** `meta.db` is SQLite and is mutated when the emulated filesystem changes. Ship a writable copy, not a read-only bundle path.
-- **apk add Just Works.** You can install extra Alpine packages at runtime via `ish_run(ish, "apk add --no-cache <pkg>", ...)`, network permitting.
+## Wire protocol summary
 
-## Host-side smoke test
+| Direction        | Op       | Payload |
+|------------------|----------|---------|
+| host → super     | `Open`   | `reqid`, `SpawnOpts { argv, envp, cwd, tty, pipe_stdin, arg0 }` |
+| host → super     | `Write`  | `reqid`, `bytes` |
+| host → super     | `Signal` | `reqid`, `signum` |
+| host → super     | `Term`   | `reqid` (= `SIGKILL` pgid + reap) |
+| host → super     | `Shutdown` | (kills all sessions, supervisor `_exit(0)` → iSH `halt_system`) |
+| super → host     | `Ready`  | `protocol_version` |
+| super → host     | `Opened` | `reqid`, `pid` |
+| super → host     | `Output` | `reqid`, `seq`, `stream`, `bytes` |
+| super → host     | `Exited` | `reqid`, `exit_code`, `term_signal` |
+| super → host     | `Closed` | `reqid` (final event for a session) |
+| super → host     | `Err`    | optional `reqid`, `code`, `msg` |
 
-`embed/tests/smoke_host.c` is a macOS host harness that links the library directly (no xcframework) and runs `echo`/`false`/`grep +stdin`/`ish_exec`/back-to-back/`ish_shutdown`. Run it after any change:
+Frames are length-prefixed (`u32` LE) postcard-encoded enums.
 
-```sh
-meson setup build-host
-cd build-host
-PATH=/opt/homebrew/opt/llvm/bin:$PATH ninja embed/smoke_host
-../embed/build-rootfs.sh   # one-time; produces build/fs/
-./embed/smoke_host ../build/fs/data
-```
+## Why a separate i386 supervisor
 
-## Licensing
-
-iSH is GPLv3 with the App-Store additional permission in `LICENSE.IOS`. Any app that links `litter_ish.xcframework` becomes a derivative work and must itself be GPL-compatible (source disclosure to end users, license text shipped). See the repo root `LICENSE.md`.
+iSH is an x86 emulator. Its PID 1's mm is loaded by `do_execve` and its execution is the emulator loop, so init's "code" must be i386 ELF that runs under the emulator — host code can't *be* PID 1. Forking from outside an iSH task is unsafe (the kernel's `fork` copies `current`'s state, which only the emulator's pthread has set up). So the supervisor is a minimal static binary built by Cargo (`cargo build --release --target i686-unknown-linux-musl`) and embedded into the host crate via `include_bytes!`. At boot the host crate writes it to `/sbin/ish-supervisor` inside the fakefs through the kernel's own `generic_open()`, so fakefs metadata is registered correctly. Production rootfs builds may bake the supervisor in at fakefsify time; the runtime path is the dev-mode fallback.

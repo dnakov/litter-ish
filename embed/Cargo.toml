@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "protocol",
+    "supervisor",
+    "host",
+]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/ish-app/ish"
+
+[workspace.dependencies]
+serde   = { version = "1", default-features = false, features = ["derive", "alloc"] }
+postcard = { version = "1.0", default-features = false, features = ["alloc"] }
+
+[profile.release]
+opt-level = 3
+lto       = "thin"
+codegen-units = 1
+strip = true
+
+# Tuned for the in-iSH supervisor: small static i386 musl ELF.
+[profile.supervisor]
+inherits  = "release"
+opt-level = "z"
+lto       = true
+panic     = "abort"
+codegen-units = 1
+strip     = true

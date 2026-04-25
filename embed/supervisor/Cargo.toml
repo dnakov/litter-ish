@@ -1,0 +1,17 @@
+[package]
+name        = "ish-supervisor"
+version     = "0.1.0"
+edition     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+description = "PID-1 supervisor that runs inside iSH and owns child processes for the embed library."
+
+[[bin]]
+name = "ish-supervisor"
+path = "src/main.rs"
+
+[dependencies]
+ish-embed-protocol = { path = "../protocol", features = [] }
+serde    = { workspace = true }
+postcard = { workspace = true, features = ["use-std"] }
+libc     = "0.2"

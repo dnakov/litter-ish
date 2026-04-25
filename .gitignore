@@ -24,3 +24,6 @@ fastlane/screenshots
 fastlane/test_output
 
 e2e_out/
+
+crates/*/target/
+crates/*/Cargo.lock
