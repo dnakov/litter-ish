@@ -200,6 +200,9 @@ fn maybe_write_cross_file(out_dir: &Path, target: &str) -> Option<PathBuf> {
          [built-in options]\n\
          c_link_args = ['-isysroot', sdk, '-arch', '{arch}', '{min_flag}']\n\
          \n\
+         [project options]\n\
+         apple_ui = true\n\
+         \n\
          [host_machine]\n\
          system = '{system}'\n\
          cpu_family = '{cpu_family}'\n\

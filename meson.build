@@ -2,6 +2,12 @@ project('ish', 'c',
     default_options: ['default_library=static', 'c_std=gnu11', 'warning_level=2'])
 cc = meson.get_compiler('c')
 
+if get_option('apple_ui')
+    add_languages('objc', native: false)
+    add_project_arguments('-DAPPLE_UI=1', language: 'c')
+    add_project_arguments('-DAPPLE_UI=1', language: 'objc')
+endif
+
 if cc.get_id() == 'clang'
     add_project_arguments('-Wimplicit-fallthrough', '-Wtautological-constant-in-range-compare', language: 'c')
 endif
@@ -153,6 +159,14 @@ if get_option('kernel') == 'ish'
 
         'platform/' + host_machine.system() + '.c',
     ]
+
+    if get_option('apple_ui')
+        src += [
+            'kernel/BatteryStatus.m',
+            'kernel/UIDevice.m',
+            'kernel/hostinfo.m',
+        ]
+    endif
 
     libish = library('ish', src,
         include_directories: includes)
