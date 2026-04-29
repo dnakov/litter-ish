@@ -1,5 +1,6 @@
 #include <fcntl.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -19,6 +20,31 @@
 const struct fd_ops socket_fdops;
 
 static lock_t peer_lock = LOCK_INITIALIZER;
+
+static int socket_finish_blocking_connect(struct fd *sock) {
+    struct pollfd pfd = {
+        .fd = sock->real_fd,
+        .events = POLLOUT,
+    };
+    for (;;) {
+        errno = 0;
+        int wait_res = poll(&pfd, 1, -1);
+        if (wait_res < 0) {
+            if (errno == EINTR)
+                continue;
+            return errno_map();
+        }
+        if (wait_res == 0)
+            continue;
+        int real_error = 0;
+        socklen_t real_error_len = sizeof(real_error);
+        if (getsockopt(sock->real_fd, SOL_SOCKET, SO_ERROR, &real_error, &real_error_len) < 0)
+            return errno_map();
+        if (real_error != 0)
+            return -err_map(real_error);
+        return 0;
+    }
+}
 
 static fd_t sock_fd_create(int sock_fd, int domain, int type, int protocol) {
     struct fd *fd = adhoc_fd_create(&socket_fdops);
@@ -367,8 +393,19 @@ int_t sys_connect(fd_t sock_fd, addr_t sockaddr_addr, uint_t sockaddr_len) {
         return err;
 
     err = connect(sock->real_fd, (void *) &sockaddr, sockaddr_len);
-    if (err < 0)
-        return errno_map();
+    if (err < 0) {
+        int mapped_err = errno_map();
+        // Darwin can return EINPROGRESS even on blocking sockets — wait for
+        // completion via poll() and report the real connect error.
+        if (mapped_err == _EINPROGRESS && !(fd_getflags(sock) & O_NONBLOCK_)) {
+            int finish_err = socket_finish_blocking_connect(sock);
+            if (finish_err < 0)
+                return finish_err;
+            err = 0;
+        } else {
+            return mapped_err;
+        }
+    }
 
     if (sock->socket.domain == AF_LOCAL_) {
         fill_cred(&sock->socket.unix_cred);
