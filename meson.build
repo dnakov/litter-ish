@@ -132,6 +132,7 @@ if get_option('kernel') == 'ish'
         'fs/proc/ish.c',
         'fs/proc/root.c',
         'fs/proc/pid.c',
+        'fs/proc/sys.c',
 
         'fs/dyndev.c',
 
