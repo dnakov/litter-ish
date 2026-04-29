@@ -392,7 +392,10 @@ static int fakefs_fsetattr(struct fd *fd, struct attr attr) {
         return realfs.fsetattr(fd, attr);
     db_begin_write(fs);
     struct ish_stat ishstat;
-    inode_read_stat_or_die(fs, fd->fake_inode, &ishstat);
+    if (!inode_read_stat_if_exist(fs, fd->fake_inode, &ishstat)) {
+        db_rollback(fs);
+        return _ENOENT;
+    }
     fake_stat_setattr(&ishstat, attr);
     inode_write_stat(fs, fd->fake_inode, &ishstat);
     db_commit(fs);
