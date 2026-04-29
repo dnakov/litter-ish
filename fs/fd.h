@@ -60,6 +60,17 @@ struct fd {
                 uid_t_ uid;
                 uid_t_ gid;
             } unix_cred;
+
+            // Linux-only sockopt state we just store and replay so userspace
+            // setsockopt+getsockopt round-trips don't fail on Darwin.
+            dword_t ip_mtu_discover;
+            dword_t ipv6_mtu_discover;
+            dword_t ipv6_mtu;
+            bool ip_recverr;
+            bool ipv6_recverr;
+            bool icmp6_filter_valid;
+            uint32_t icmp6_filter[8];
+            char tcp_congestion[16];
         } socket;
 
         // See app/Pasteboard.m
