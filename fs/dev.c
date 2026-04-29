@@ -9,6 +9,8 @@
 struct dev_ops *block_devs[256] = {
     // no block devices yet
 };
+extern struct dev_ops rtc_dev;
+
 struct dev_ops *char_devs[256] = {
     [MEM_MAJOR] = &mem_dev,
     [TTY_CONSOLE_MAJOR] = &tty_dev,
@@ -16,6 +18,7 @@ struct dev_ops *char_devs[256] = {
     [TTY_PSEUDO_MASTER_MAJOR] = &tty_dev,
     [TTY_PSEUDO_SLAVE_MAJOR] = &tty_dev,
     [DYN_DEV_MAJOR] = &dyn_dev_char,
+    [DEV_RTC_MAJOR] = &rtc_dev,
 };
 
 int dev_open(int major, int minor, int type, struct fd *fd) {

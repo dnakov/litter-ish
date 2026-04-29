@@ -111,6 +111,7 @@ if get_option('kernel') == 'ish'
         'kernel/resource.c',
         'kernel/random.c',
         'kernel/misc.c',
+        'kernel/rtc.c',
         'kernel/eventfd.c',
         'kernel/ipc.c',
         'kernel/ptrace.c',

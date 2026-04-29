@@ -41,4 +41,8 @@
 // /dev/gps
 #define DEV_LOCATION_MINOR 1
 
+// /dev/rtc — emulated real-time clock (legacy major=252 on Linux).
+#define DEV_RTC_MAJOR 252
+#define DEV_RTC_MINOR 2
+
 #endif
