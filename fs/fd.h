@@ -70,6 +70,7 @@ struct fd {
             bool ipv6_recverr;
             bool icmp6_filter_valid;
             uint32_t icmp6_filter[8];
+            dword_t tcp_defer_accept;
             char tcp_congestion[16];
         } socket;
 

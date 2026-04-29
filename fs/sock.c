@@ -731,6 +731,12 @@ int_t sys_setsockopt(fd_t sock_fd, dword_t level, dword_t option, addr_t value_a
         sock->socket.tcp_congestion[congestion_len] = '\0';
         return 0;
     }
+    if (level == IPPROTO_TCP && option == TCP_DEFER_ACCEPT_) {
+        if (value_len < sizeof(dword_t))
+            return _EINVAL;
+        sock->socket.tcp_defer_accept = *(dword_t *) value;
+        return 0;
+    }
 
     int real_opt = sock_opt_to_real(option, level);
     if (real_opt < 0)
@@ -819,6 +825,10 @@ int_t sys_getsockopt(fd_t sock_fd, dword_t level, dword_t option, addr_t value_a
         if (err < 0)
             return errno_map();
         *(dword_t *) value = real_error == 0 ? 0 : -err_map(real_error);
+    } else if (level == IPPROTO_TCP && option == TCP_DEFER_ACCEPT_) {
+        if (value_len != sizeof(dword_t))
+            return _EINVAL;
+        *(dword_t *) value = sock->socket.tcp_defer_accept;
     } else if (level == IPPROTO_TCP && option == TCP_CONGESTION_) {
         size_t name_len = strlen(sock->socket.tcp_congestion);
         if (name_len > value_len)
