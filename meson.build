@@ -160,6 +160,12 @@ if get_option('kernel') == 'ish'
         'platform/' + host_machine.system() + '.c',
     ]
 
+    if host_machine.system() == 'darwin'
+        # Darwin-only: collect host kernel routing table via PF_ROUTE sysctl
+        # and expose via fs/net_route.h. Linux/embedded users don't need it.
+        src += ['fs/net_route.c']
+    endif
+
     if get_option('apple_ui')
         src += [
             'kernel/BatteryStatus.m',
