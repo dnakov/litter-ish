@@ -1189,12 +1189,19 @@ int_t sys_recvmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
         cmsg->type = SCM_RIGHTS_;
         fd_t *fds = (void *) cmsg->data;
         for (unsigned i = 0; i < scm->num_fds; i++) {
+            // f_install takes ownership of one ref; the matching scm_free
+            // below releases the ref the scm itself holds, so retain first
+            // to avoid leaving a dangling fd in the new fd table.
+            fd_retain(scm->fds[i]);
             fds[i] = f_install(scm->fds[i], 0);
             STRACE(" receiving fd %d", fds[i]);
         }
-        if (user_write(msg_fake.msg_control, cmsg, cmsg->len))
+        if (user_write(msg_fake.msg_control, cmsg, cmsg->len)) {
+            scm_free(scm);
             return _EFAULT;
+        }
         msg_fake.msg_controllen = msg.msg_controllen;
+        scm_free(scm);
     }
 
     // by now the iovecs and scm have been freed so we can return
