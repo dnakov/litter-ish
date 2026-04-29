@@ -3,6 +3,7 @@
 #define FUTEX_WAIT_ 0
 #define FUTEX_WAKE_ 1
 #define FUTEX_REQUEUE_ 3
+#define FUTEX_CMP_REQUEUE_ 4
 #define FUTEX_PRIVATE_FLAG_ 128
 #define FUTEX_CMD_MASK_ ~(FUTEX_PRIVATE_FLAG_)
 
@@ -152,6 +153,21 @@ int futex_wake(addr_t uaddr, dword_t wake_max) {
     return futex_wakelike(FUTEX_WAKE_, uaddr, wake_max, 0, 0);
 }
 
+static int futex_cmp_requeue(addr_t uaddr1, dword_t val_wake, addr_t uaddr2, dword_t val_requeue, dword_t expected) {
+    struct futex *futex = futex_get(uaddr1);
+    dword_t cur;
+    if (futex_load(futex, &cur)) {
+        futex_put(futex);
+        return _EFAULT;
+    }
+    if (cur != expected) {
+        futex_put(futex);
+        return _EAGAIN;
+    }
+    futex_put(futex);
+    return futex_wakelike(FUTEX_REQUEUE_, uaddr1, val_wake, val_requeue, uaddr2);
+}
+
 dword_t sys_futex(addr_t uaddr, dword_t op, dword_t val, addr_t timeout_or_val2, addr_t uaddr2, dword_t val3) {
     if (!(op & FUTEX_PRIVATE_FLAG_)) {
         STRACE("!FUTEX_PRIVATE ");
@@ -174,6 +190,9 @@ dword_t sys_futex(addr_t uaddr, dword_t op, dword_t val, addr_t timeout_or_val2,
         case FUTEX_REQUEUE_:
             STRACE("futex(FUTEX_REQUEUE, %#x, %d, %#x)", uaddr, val, uaddr2);
             return futex_wakelike(op & FUTEX_CMD_MASK_, uaddr, val, timeout_or_val2, uaddr2);
+        case FUTEX_CMP_REQUEUE_:
+            STRACE("futex(FUTEX_CMP_REQUEUE, %#x, %d, %d, %#x, %d)", uaddr, val, timeout_or_val2, uaddr2, val3);
+            return futex_cmp_requeue(uaddr, val, uaddr2, timeout_or_val2, val3);
     }
     STRACE("futex(%#x, %d, %d, timeout=%#x, %#x, %d) ", uaddr, op, val, timeout_or_val2, uaddr2, val3);
     FIXME("unsupported futex operation %d", op);
