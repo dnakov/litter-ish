@@ -503,11 +503,24 @@ int_t sys_getpeername(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_ad
     dword_t sockaddr_len;
     if (user_get(sockaddr_len_addr, sockaddr_len))
         return _EFAULT;
-
-    // TODO if this is a unix socket, return the same string the peer passed to
-    // bind once the peer pointer is available
-
     char sockaddr[sockaddr_len];
+
+    if (sock->socket.domain == PF_LOCAL_) {
+        lock(&peer_lock);
+        struct fd *peer = sock->socket.unix_peer;
+        if (peer == NULL) {
+            unlock(&peer_lock);
+            return _ENOTCONN;
+        }
+        copy_unix_name(sockaddr, &sockaddr_len, peer);
+        unlock(&peer_lock);
+        if (user_write(sockaddr_addr, sockaddr, sizeof(sockaddr)))
+            return _EFAULT;
+        if (user_put(sockaddr_len_addr, sockaddr_len))
+            return _EFAULT;
+        return 0;
+    }
+
     int res = getpeername(sock->real_fd, (void *) sockaddr, &sockaddr_len);
     if (res < 0)
         return errno_map();
