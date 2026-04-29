@@ -161,10 +161,48 @@ static int proc_ish_show_version(struct proc_entry *UNUSED(entry), struct proc_d
     return 0;
 }
 
+#if APPLE_UI
+extern char *printBatteryStatus(int type);
+extern char *printUIDevice(void);
+extern char *printHostInfo(void);
+
+static int proc_ish_show_battery(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
+    proc_printf(buf, "%s", printBatteryStatus(3));
+    return 0;
+}
+static int proc_ish_show_battery_capacity(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
+    proc_printf(buf, "%s", printBatteryStatus(2));
+    return 0;
+}
+static int proc_ish_show_battery_status(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
+    proc_printf(buf, "%s", printBatteryStatus(1));
+    return 0;
+}
+static int proc_ish_show_uidevice(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
+    proc_printf(buf, "%s", printUIDevice());
+    return 0;
+}
+static int proc_ish_show_host_info(struct proc_entry *UNUSED(entry), struct proc_data *buf) {
+    char *host_info = printHostInfo();
+    proc_printf(buf, "%s", host_info ? host_info : "");
+    free(host_info);
+    return 0;
+}
+#endif // APPLE_UI
+
 struct proc_children proc_ish_children = PROC_CHILDREN({
+#if APPLE_UI
+    {"BAT0", .show = proc_ish_show_battery},
+    {"BAT0_capacity", .show = proc_ish_show_battery_capacity},
+    {"BAT0_status", .show = proc_ish_show_battery_status},
+    {"UIDevice", .show = proc_ish_show_uidevice},
+#endif
     {"colors", .show = proc_ish_show_colors},
     {".defaults", S_IFDIR, .readdir = proc_ish_underlying_defaults_readdir},
     {"defaults", S_IFDIR, .readdir = proc_ish_defaults_readdir},
     {"documents", .show = proc_ish_show_documents},
+#if APPLE_UI
+    {"host_info", .show = proc_ish_show_host_info},
+#endif
     {"version", .show = proc_ish_show_version},
 });
