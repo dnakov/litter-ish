@@ -114,6 +114,7 @@ static int proc_show_mounts(struct proc_entry *UNUSED(entry), struct proc_data *
 }
 
 extern struct proc_children proc_sys_children;
+extern struct proc_children proc_net_children;
 
 // in alphabetical order
 struct proc_dir_entry proc_root_entries[] = {
@@ -121,6 +122,7 @@ struct proc_dir_entry proc_root_entries[] = {
     {"ish", S_IFDIR, .children = &proc_ish_children},
     {"meminfo", .show = proc_show_meminfo},
     {"mounts", .show = proc_show_mounts},
+    {"net", S_IFDIR, .children = &proc_net_children},
     {"self", S_IFLNK, .readlink = proc_readlink_self},
     {"stat", .show = proc_show_stat},
     {"sys", S_IFDIR, .children = &proc_sys_children},
