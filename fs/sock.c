@@ -1,7 +1,11 @@
 #include <fcntl.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -16,6 +20,178 @@
 #define SOCKET_TYPE_MASK 0xf
 
 #define DEFAULT_TCP_CONGESTION "cubic"
+
+// Linux interface ioctls. Numbers/structs are guest-ABI-stable, host
+// numbers (Darwin SIOCGIFCONF == 0xc00c6924) differ, so we can't just
+// pass these through to realfs_ioctl.
+#define IFNAMSIZ_ 16
+#define SIOCGIFNAME_ 0x8910
+#define SIOCGIFCONF_ 0x8912
+#define SIOCGIFFLAGS_ 0x8913
+#define SIOCGIFINDEX_ 0x8933
+
+#define IFF_UP_LINUX_         0x0001
+#define IFF_BROADCAST_LINUX_  0x0002
+#define IFF_LOOPBACK_LINUX_   0x0008
+#define IFF_POINTOPOINT_LINUX_ 0x0010
+#define IFF_RUNNING_LINUX_    0x0040
+#define IFF_NOARP_LINUX_      0x0080
+#define IFF_PROMISC_LINUX_    0x0100
+#define IFF_MULTICAST_LINUX_  0x1000
+
+struct ifreq_ {
+    char ifr_name[IFNAMSIZ_];
+    union {
+        int32_t ifindex;
+        int16_t flags;
+        char data[24];
+    } ifr_ifru;
+};
+
+struct sockaddr_in_ {
+    uint16_t sin_family;
+    uint16_t sin_port;
+    uint32_t sin_addr;
+    uint8_t sin_zero[8];
+};
+
+struct guest_ifreq_addr_ {
+    char ifr_name[IFNAMSIZ_];
+    struct sockaddr_in_ guest_addr;
+};
+
+struct guest_ifconf_ {
+    int32_t guest_len;
+    addr_t guest_buf;
+};
+
+static uint32_t linux_if_flags(unsigned host_flags) {
+    uint32_t f = 0;
+    if (host_flags & IFF_UP)         f |= IFF_UP_LINUX_;
+    if (host_flags & IFF_BROADCAST)  f |= IFF_BROADCAST_LINUX_;
+    if (host_flags & IFF_LOOPBACK)   f |= IFF_LOOPBACK_LINUX_;
+    if (host_flags & IFF_POINTOPOINT) f |= IFF_POINTOPOINT_LINUX_;
+    if (host_flags & IFF_RUNNING)    f |= IFF_RUNNING_LINUX_;
+#ifdef IFF_NOARP
+    if (host_flags & IFF_NOARP)      f |= IFF_NOARP_LINUX_;
+#endif
+#ifdef IFF_PROMISC
+    if (host_flags & IFF_PROMISC)    f |= IFF_PROMISC_LINUX_;
+#endif
+#ifdef IFF_MULTICAST
+    if (host_flags & IFF_MULTICAST)  f |= IFF_MULTICAST_LINUX_;
+#endif
+    return f;
+}
+
+static int sock_ifreq_name_from_index(struct ifreq_ *ifreq) {
+    unsigned ifindex = (unsigned) ifreq->ifr_ifru.ifindex;
+    if (ifindex == 0)
+        return _ENODEV;
+    struct if_nameindex *list = if_nameindex();
+    if (list == NULL)
+        return _EIO;
+    int err = _ENODEV;
+    for (struct if_nameindex *e = list; e->if_index != 0 || e->if_name != NULL; e++) {
+        if (e->if_index != ifindex || e->if_name == NULL)
+            continue;
+        memset(ifreq->ifr_name, 0, sizeof(ifreq->ifr_name));
+        strncpy(ifreq->ifr_name, e->if_name, sizeof(ifreq->ifr_name) - 1);
+        err = 0;
+        break;
+    }
+    if_freenameindex(list);
+    return err;
+}
+
+static int sock_ifreq_index_from_name(struct ifreq_ *ifreq) {
+    if (ifreq->ifr_name[0] == '\0')
+        return _ENODEV;
+    unsigned ifindex = if_nametoindex(ifreq->ifr_name);
+    if (ifindex == 0)
+        return _ENODEV;
+    ifreq->ifr_ifru.ifindex = (int32_t) ifindex;
+    return 0;
+}
+
+static int sock_ifreq_flags_from_name(struct ifreq_ *ifreq) {
+    if (ifreq->ifr_name[0] == '\0')
+        return _ENODEV;
+    struct ifaddrs *addrs = NULL;
+    if (getifaddrs(&addrs) != 0)
+        return _EIO;
+    int err = _ENODEV;
+    for (const struct ifaddrs *cursor = addrs; cursor != NULL; cursor = cursor->ifa_next) {
+        if (cursor->ifa_name == NULL)
+            continue;
+        if (strncmp(cursor->ifa_name, ifreq->ifr_name, sizeof(ifreq->ifr_name)) != 0)
+            continue;
+        ifreq->ifr_ifru.flags = (int16_t) linux_if_flags(cursor->ifa_flags);
+        err = 0;
+        break;
+    }
+    freeifaddrs(addrs);
+    return err;
+}
+
+static int sock_ifconf(struct guest_ifconf_ *ifconf) {
+    if (ifconf->guest_len < 0)
+        return _EINVAL;
+    struct ifaddrs *addrs = NULL;
+    if (getifaddrs(&addrs) != 0)
+        return _EIO;
+
+    size_t capacity = (size_t) ifconf->guest_len;
+    size_t used = 0;
+    size_t total = 0;
+    int err = 0;
+
+    for (const struct ifaddrs *cursor = addrs; cursor != NULL; cursor = cursor->ifa_next) {
+        if (cursor->ifa_name == NULL || cursor->ifa_addr == NULL)
+            continue;
+        if (cursor->ifa_addr->sa_family != AF_INET)
+            continue;
+        struct guest_ifreq_addr_ entry = {0};
+        strncpy(entry.ifr_name, cursor->ifa_name, sizeof(entry.ifr_name) - 1);
+        entry.guest_addr.sin_family = AF_INET_;
+        entry.guest_addr.sin_addr =
+            ((const struct sockaddr_in *) cursor->ifa_addr)->sin_addr.s_addr;
+        total += sizeof(entry);
+        if (ifconf->guest_buf == 0 || used + sizeof(entry) > capacity)
+            continue;
+        if (user_write(ifconf->guest_buf + used, &entry, sizeof(entry))) {
+            err = _EFAULT;
+            break;
+        }
+        used += sizeof(entry);
+    }
+    freeifaddrs(addrs);
+    if (err < 0)
+        return err;
+    ifconf->guest_len =
+        ifconf->guest_buf == 0 ? (int32_t) total : (int32_t) used;
+    return 0;
+}
+
+static ssize_t sock_ioctl_size(int cmd) {
+    switch (cmd) {
+        case SIOCGIFCONF_: return sizeof(struct guest_ifconf_);
+        case SIOCGIFNAME_:
+        case SIOCGIFINDEX_:
+        case SIOCGIFFLAGS_: return sizeof(struct ifreq_);
+        default: return realfs_ioctl_size(cmd);
+    }
+}
+
+static int sock_ioctl(struct fd *fd, int cmd, void *arg) {
+    switch (cmd) {
+        case SIOCGIFNAME_:  return sock_ifreq_name_from_index(arg);
+        case SIOCGIFCONF_:  return sock_ifconf(arg);
+        case SIOCGIFINDEX_: return sock_ifreq_index_from_name(arg);
+        case SIOCGIFFLAGS_: return sock_ifreq_flags_from_name(arg);
+        default: return realfs_ioctl(fd, cmd, arg);
+    }
+}
 
 const struct fd_ops socket_fdops;
 
@@ -1312,8 +1488,8 @@ const struct fd_ops socket_fdops = {
     .poll = realfs_poll,
     .getflags = realfs_getflags,
     .setflags = realfs_setflags,
-    .ioctl_size = realfs_ioctl_size,
-    .ioctl = realfs_ioctl,
+    .ioctl_size = sock_ioctl_size,
+    .ioctl = sock_ioctl,
 };
 
 #if defined(__GNUC__) && __GNUC__ >= 8
