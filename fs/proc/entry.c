@@ -1,4 +1,5 @@
 #include <sys/stat.h>
+#include <stdint.h>
 #include <string.h>
 #include "fs/stat.h"
 #include "fs/proc.h"
@@ -33,8 +34,38 @@ int proc_entry_stat(struct proc_entry *entry, struct statbuf *stat) {
 
     unlock(&pids_lock);
 
-    stat->inode = entry->meta->inode | entry->pid << 16 | (uint64_t) entry->fd << 48;
+    stat->inode = proc_entry_inode(entry);
     return 0;
+}
+
+qword_t proc_entry_inode(struct proc_entry *entry) {
+    // Procfs entries need globally unique, stable-enough inode values so tools
+    // like du don't mistake unrelated proc directories for cycles. FNV-1a over
+    // (parent meta pointer, this meta pointer, name, pid, fd).
+    uint64_t hash = 1469598103934665603ULL;
+#define FNV_MIX_BYTE(v) do { hash ^= (uint8_t) (v); hash *= 1099511628211ULL; } while (0)
+#define FNV_MIX_VALUE(v) do { \
+    uint64_t value__ = (uint64_t) (uintptr_t) (v); \
+    for (size_t i__ = 0; i__ < sizeof(value__); i__++) \
+        FNV_MIX_BYTE(value__ >> (i__ * 8)); \
+} while (0)
+
+    FNV_MIX_VALUE(entry->meta->parent);
+    FNV_MIX_VALUE(entry->meta);
+    if (entry->meta->getname || entry->meta->name != NULL) {
+        char name[MAX_NAME + 1];
+        proc_entry_getname(entry, name);
+        for (size_t i = 0; name[i] != '\0'; i++)
+            FNV_MIX_BYTE(name[i]);
+    }
+    FNV_MIX_VALUE(entry->pid);
+    FNV_MIX_VALUE(entry->fd);
+
+    if (hash == 0)
+        hash = 1;
+    return hash;
+#undef FNV_MIX_VALUE
+#undef FNV_MIX_BYTE
 }
 
 void proc_entry_getname(struct proc_entry *entry, char *buf) {

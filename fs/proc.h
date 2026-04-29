@@ -67,6 +67,7 @@ extern struct proc_children proc_ish_children;
 
 mode_t_ proc_entry_mode(struct proc_entry *entry);
 void proc_entry_getname(struct proc_entry *entry, char *buf);
+qword_t proc_entry_inode(struct proc_entry *entry);
 int proc_entry_stat(struct proc_entry *entry, struct statbuf *stat);
 void proc_entry_cleanup(struct proc_entry *entry);
 

@@ -31,9 +31,73 @@ bool contains_mount_point(const char *path) {
     return false;
 }
 
+// If path_raw resolves to /proc/PID/fd/N, return a real reopened fd for the
+// underlying file. Without this, opening /proc/self/fd/N hits procfs's
+// readlink-only entry and the open fails or yields an unusable fd. The
+// reopen also gives the caller the right access mode and makes paths
+// (e.g. as exposed to Files-app fd-handing) reasonable.
+static struct fd *procfd_openat(struct fd *at, const char *path_raw) {
+    char path[MAX_PATH];
+    int err = path_normalize(at, path_raw, path, N_SYMLINK_NOFOLLOW);
+    if (err < 0)
+        return NULL;
+
+    struct mount *mount = find_mount_and_trim_path(path);
+    if (mount->fs != &procfs) {
+        mount_release(mount);
+        return NULL;
+    }
+
+    int pid;
+    int fd_no;
+    int n = 0;
+    if (sscanf(path, "/%d/fd/%d%n", &pid, &fd_no, &n) != 2 || path[n] != '\0') {
+        mount_release(mount);
+        return NULL;
+    }
+    mount_release(mount);
+
+    lock(&pids_lock);
+    struct task *task = pid_get_task(pid);
+    if (task == NULL || task->exiting) {
+        unlock(&pids_lock);
+        return ERR_PTR(_ENOENT);
+    }
+
+    lock(&task->files->lock);
+    struct fd *fd = fdtable_get(task->files, fd_no);
+    if (fd == NULL) {
+        unlock(&task->files->lock);
+        unlock(&pids_lock);
+        return ERR_PTR(_ENOENT);
+    }
+    fd = fd_retain(fd);
+    unlock(&task->files->lock);
+    unlock(&pids_lock);
+
+    if (fd->type == S_IFREG || fd->type == S_IFDIR) {
+        char reopened_path[MAX_PATH];
+        int gpath_err = generic_getpath(fd, reopened_path);
+        if (gpath_err >= 0) {
+            int reopen_flags = fd->flags & (O_RDWR_ | O_WRONLY_ | O_NONBLOCK_ | O_APPEND_ | O_DIRECTORY_);
+            struct fd *reopened = generic_open(reopened_path, reopen_flags, 0);
+            if (!IS_ERR(reopened)) {
+                fd_close(fd);
+                return reopened;
+            }
+        }
+    }
+
+    return fd;
+}
+
 struct fd *generic_openat(struct fd *at, const char *path_raw, int flags, int mode) {
     if (flags & O_RDWR_ && flags & O_WRONLY_)
         return ERR_PTR(_EINVAL);
+
+    struct fd *procfd = procfd_openat(at, path_raw);
+    if (procfd != NULL)
+        return procfd;
 
     // TODO really, really, seriously reconsider what I'm doing with the strings
     char path[MAX_PATH];
