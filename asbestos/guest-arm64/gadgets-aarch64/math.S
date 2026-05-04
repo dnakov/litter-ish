@@ -1561,7 +1561,7 @@ ccmp_cond_table:
     b ccmp_set_nzcv
     b ccmp_do_compare           // 14: AL (always)
     nop
-    b ccmp_set_nzcv             // 15: NV (never - treat as always false)
+    b ccmp_do_compare           // 15: NV (AArch64 treats NV as always true here)
     nop
 
 ccmp_do_compare:
@@ -1651,7 +1651,7 @@ ccmpi_cond_table:
     b ccmpi_set_nzcv
     b ccmpi_do_compare           // 14: AL (always)
     nop
-    b ccmpi_set_nzcv             // 15: NV (never - treat as always false)
+    b ccmpi_do_compare           // 15: NV (AArch64 treats NV as always true here)
     nop
 
 ccmpi_do_compare:
@@ -1739,7 +1739,7 @@ ccmn_cond_table:
     b ccmn_set_nzcv
     b ccmn_do_compare           // 14: AL (always)
     nop
-    b ccmn_set_nzcv             // 15: NV (never)
+    b ccmn_do_compare           // 15: NV (AArch64 treats NV as always true here)
     nop
 
 ccmn_do_compare:
@@ -1829,7 +1829,7 @@ ccmni_cond_table:
     b ccmni_set_nzcv
     b ccmni_do_compare           // 14: AL (always)
     nop
-    b ccmni_set_nzcv             // 15: NV (never - treat as always false)
+    b ccmni_do_compare           // 15: NV (AArch64 treats NV as always true here)
     nop
 
 ccmni_do_compare:

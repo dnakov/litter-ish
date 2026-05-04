@@ -285,9 +285,10 @@ The coverage script currently exercises, in order:
 4. high-value syscall gap coverage (`signalfd4`, SysV semaphores, POSIX mqueues, `memfd_create`, `openat2`, `faccessat2`, `preadv2`, `pwritev2`, `process_vm_*`);
 5. ARM64 `DCZID_EL0` / `dc zva` sysreg and instruction coverage;
 6. ARM64 signal `ucontext_t` layout and null-SIGSEGV delivery coverage;
-7. Go (`go version`, `go env`, `go tool compile`, `go run`, `go build`, `go test`);
-8. Bun (`bun --version`, local `file:` dependency install, TypeScript run, test, build);
-9. Node/npm (`node --version`, `node -e`, `npm --version`, `npm run`).
+7. ARM64 `CCMP`/`CCMN` condition-code-15 (`NV`) coverage;
+8. Go (`go version`, `go env`, `go tool compile`, `go run`, `go build`, `go test`);
+9. Bun (`bun --version`, local `file:` dependency install, TypeScript run, test, build);
+10. Node/npm (`node --version`, `node -e`, `npm --version`, `npm run`).
 
 Each run writes a Markdown report named
 `ish-arm64-runtime-coverage-YYYYMMDD-HHMMSS.md` under `REPORT_DIR`. The suite is
@@ -296,13 +297,14 @@ to debug, not as cases to skip.
 
 Current Linux-host status from this pass:
 
-- Latest staged run: **24 / 24 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260504-132203.md`, `TIMEOUT_S=120`, `INSTALL_TIMEOUT_S=300`).
+- Latest staged run: **25 / 25 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260504-205043.md`, `TIMEOUT_S=120`, `INSTALL_TIMEOUT_S=300`).
 - Non-trivial workload probes are grouped in [docs/ARM64_WORKLOAD_SMOKE_TESTS.md](docs/ARM64_WORKLOAD_SMOKE_TESTS.md): Bun/PiClaw, `rcarmo/go-gte`, and the Benchmarks Game rows.
 - C coverage is green: `gcc --version`, compile, and execute all pass.
 - SysV IPC coverage is green: shared memory and message queues work across `fork()`.
 - High-value syscall gap coverage is green: `signalfd4`, SysV semaphores, POSIX mqueues, `memfd_create`, `openat2`, `faccessat2`, `preadv2`, `pwritev2`, and `process_vm_*` pass in the staged C fixture.
 - ARM64 DC ZVA coverage is green: `DCZID_EL0` reports a 64-byte block and `dc zva` zeros the expected naturally aligned block.
 - ARM64 signal ucontext coverage is green: guest SIGSEGV handlers see `uc_mcontext` at offset 176 with correct PC/SP/LR, and null read faults reach handlers instead of being converted to zero loads.
+- ARM64 conditional-compare coverage is green: `CCMP`/`CCMN` with condition code 15 (`NV`) now follows AArch64 hardware and performs the compare instead of taking the false-immediate path.
 - Go coverage is green: `go version`, `go env`, `go tool compile`, `go run`,
   `go build` + execute, and `go test` all pass.
 - Bun coverage is green: `bun --version`, local `file:` dependency install,

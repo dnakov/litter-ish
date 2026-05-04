@@ -6,7 +6,7 @@ Updated: 2026-05-04
 
 The current ARM64 Linux-host fakefs is in a good core-runtime state:
 
-- Staged runtime coverage: **24 / 24 passing**.
+- Staged runtime coverage: **25 / 25 passing**.
 - Benchmarks Game core tier: **9 official language rows × 10 benchmarks = 90 / 90 runs passing**.
 - Java-equivalent probe: **10 / 10 passing** in HotSpot interpreter mode (`-Xint -Xshare:off`).
 - Native compiler rows additionally build inside the guest: **GCC 10 / 10 builds**, **G++ 10 / 10 builds**.
@@ -90,7 +90,7 @@ The remaining risk is now concentrated less in common development syscalls and m
 
 ## 2026-05-04 high-value syscall gap closure
 
-Implemented and validated in `/workspace/tmp/ish-arm64-runtime-coverage-20260504-132203.md`:
+Implemented and validated in `/workspace/tmp/ish-arm64-runtime-coverage-20260504-205043.md`:
 
 - `signalfd4`
 - SysV semaphores: `semget`, `semctl`, `semop`, `semtimedop`
@@ -119,3 +119,9 @@ HotSpot uses guest SIGSEGV handlers for implicit null checks. ARM64 iSH now:
 The staged runtime suite includes `arm64 signal ucontext layout`, which intentionally dereferences null under a `SA_SIGINFO` handler and verifies the handler sees the expected PC/SP/LR context.
 
 Remaining Java work: default mixed-mode `javac` now gets past the original startup/signal-frame blockers but still fails later in generated/compiled HotSpot code with corrupted receiver/object state; keep that as the next JIT correctness target.
+
+## 2026-05-04 ARM64 CCMP/CCMN condition-code correction
+
+AArch64 conditional compare instructions (`CCMP`/`CCMN`) treat condition code 15 (`NV`) as condition-true, matching `AL` behavior for these instructions on hardware. ARM64 iSH previously treated `NV` as false and loaded the immediate NZCV fallback. The staged runtime suite now includes `arm64 CCMP/CCMN NV condition`, covering both subtract and add conditional-compare forms plus a false-condition NZCV fallback check.
+
+This is an ARM64 ISA correctness fix found while narrowing the remaining OpenJDK mixed-mode lane. It does **not** close default mixed-mode `javac`: that remains blocked by a later HotSpot compiler/generated-code correctness issue.

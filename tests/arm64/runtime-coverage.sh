@@ -233,6 +233,69 @@ int main(void) {
     return 0;
 }
 EOF
+    cat >"$dir/ccmp_nv.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static unsigned flags_after_ccmp_nv(uint64_t a, uint64_t b) {
+    uint64_t flags;
+    __asm__ volatile(
+        "cmp %1, %2\n"
+        "ccmp %1, %2, #0, nv\n"
+        "mrs %0, nzcv\n"
+        : "=r"(flags) : "r"(a), "r"(b) : "cc");
+    return (unsigned)(flags >> 28) & 0xf;
+}
+
+static unsigned flags_after_ccmn_nv(uint64_t a, uint64_t b) {
+    uint64_t flags;
+    __asm__ volatile(
+        "cmp %1, %2\n"
+        "ccmn %1, %2, #0, nv\n"
+        "mrs %0, nzcv\n"
+        : "=r"(flags) : "r"(a), "r"(b) : "cc");
+    return (unsigned)(flags >> 28) & 0xf;
+}
+
+static unsigned flags_after_ccmp_ne_false(uint64_t a, uint64_t b) {
+    uint64_t flags;
+    __asm__ volatile(
+        "cmp %1, %1\n"
+        "ccmp %1, %2, #5, ne\n"
+        "mrs %0, nzcv\n"
+        : "=r"(flags) : "r"(a), "r"(b) : "cc");
+    return (unsigned)(flags >> 28) & 0xf;
+}
+
+static unsigned flags_sub(uint64_t a, uint64_t b) {
+    uint64_t flags;
+    __asm__ volatile("cmp %1, %2\n mrs %0, nzcv" : "=r"(flags) : "r"(a), "r"(b) : "cc");
+    return (unsigned)(flags >> 28) & 0xf;
+}
+
+static unsigned flags_add(uint64_t a, uint64_t b) {
+    uint64_t flags;
+    __asm__ volatile("cmn %1, %2\n mrs %0, nzcv" : "=r"(flags) : "r"(a), "r"(b) : "cc");
+    return (unsigned)(flags >> 28) & 0xf;
+}
+
+int main(void) {
+    int fail = 0;
+    uint64_t pairs[][2] = {{0,0}, {1,2}, {2,1}, {0xffffffffffffffffULL,1}, {0x8000000000000000ULL,0}};
+    for (unsigned i = 0; i < sizeof(pairs)/sizeof(pairs[0]); i++) {
+        uint64_t a = pairs[i][0], b = pairs[i][1];
+        unsigned got = flags_after_ccmp_nv(a, b), exp = flags_sub(a, b);
+        if (got != exp) { printf("ccmp-nv fail %llx %llx got %x exp %x\n", (unsigned long long)a, (unsigned long long)b, got, exp); fail++; }
+        got = flags_after_ccmn_nv(a, b); exp = flags_add(a, b);
+        if (got != exp) { printf("ccmn-nv fail %llx %llx got %x exp %x\n", (unsigned long long)a, (unsigned long long)b, got, exp); fail++; }
+    }
+    if (flags_after_ccmp_ne_false(1, 2) != 5) { printf("ccmp false nzcv fail got %x\n", flags_after_ccmp_ne_false(1, 2)); fail++; }
+    if (fail) return 1;
+    puts("ccmp-nv-ok");
+    return 0;
+}
+EOF
+
     cat >"$dir/signal_ucontext.c" <<'EOF'
 #define _GNU_SOURCE
 #include <signal.h>
@@ -456,6 +519,7 @@ main() {
     run_test c "high-value syscall gaps" "cd '$GUEST_WORK/c' && gcc -O0 syscall_gaps.c -o syscall_gaps -lrt && ./syscall_gaps | grep -qx syscall-gaps-ok"
     run_test c "arm64 DC ZVA sysreg/instruction" "cd '$GUEST_WORK/c' && gcc -O0 dczva.c -o dczva && ./dczva | grep -qx dczva-ok"
     run_test c "arm64 signal ucontext layout" "cd '$GUEST_WORK/c' && gcc -O0 signal_ucontext.c -o signal_ucontext && ./signal_ucontext | grep -qx signal-ucontext-ok"
+    run_test c "arm64 CCMP/CCMN NV condition" "cd '$GUEST_WORK/c' && gcc -O0 ccmp_nv.c -o ccmp_nv && ./ccmp_nv | grep -qx ccmp-nv-ok"
 
     ensure_tools go
     prepare_go_fixture
