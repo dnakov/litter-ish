@@ -298,7 +298,7 @@ to debug, not as cases to skip.
 
 Current Linux-host status from this pass:
 
-- Latest staged run: **26 / 26 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260505-054944.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`).
+- Latest staged run: **26 / 26 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260505-072351.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`).
 - Non-trivial workload probes are grouped in [docs/ARM64_WORKLOAD_SMOKE_TESTS.md](docs/ARM64_WORKLOAD_SMOKE_TESTS.md): Bun/PiClaw, `rcarmo/go-gte`, and the Benchmarks Game rows.
 - C coverage is green: `gcc --version`, compile, and execute all pass.
 - SysV IPC coverage is green: shared memory and message queues work across `fork()`.

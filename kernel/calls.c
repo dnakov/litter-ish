@@ -517,12 +517,14 @@ void handle_interrupt(int interrupt) {
             // that work on native Linux (because adjacent heap pages are always
             // mapped) but crash in iSH (because we have unmapped gaps).
             // Rate-limited to prevent infinite loops on true null-pointer derefs.
-#ifdef GUEST_ARM64
+#if defined(GUEST_ARM64) && defined(ENABLE_ARM64_READ_FAULT_RECOVERY)
             if (!cpu->segfault_was_write && cpu->segfault_addr >= 0x1000) {
                 static _Thread_local int read_recovery_count = 0;
                 static _Thread_local addr_t last_recovery_addr = 0;
-                // Reset counter when faulting address changes (scanner moving through memory)
-                // Only rate-limit when stuck at the exact same PC AND address (true infinite loop)
+                // Diagnostic-only compatibility hack: synthesize zero for a
+                // small number of non-null unmapped reads. Keep disabled in
+                // production because it hides real emulation/runtime bugs and
+                // corrupts JIT/compiler state (for example HotSpot C2).
                 if (cpu->segfault_addr != last_recovery_addr) {
                     read_recovery_count = 0;
                     last_recovery_addr = cpu->segfault_addr;
@@ -537,38 +539,27 @@ void handle_interrupt(int interrupt) {
                         insn |= (uint32_t)b << (j * 8);
                     }
                     if (insn_ok) {
-                        // Check if instruction is a load (LDR/LDRSB/LDRSH/LDRSW/LDRB/LDRH)
-                        // Pre-indexed: LDRSB Wt, [Xn, #imm]! = 0x38C00C00 (size=0, opc=3, bit21=0)
-                        // Various load encodings share common patterns
                         uint32_t rt = insn & 0x1f;
                         bool is_load = false;
-                        bool is_32bit = false;
-                        // LDR/LDRSB/LDRSH/LDRSW with pre/post/unscaled offset
                         uint32_t rn = (insn >> 5) & 0x1f;
                         int has_writeback = 0;
                         if ((insn & 0x3b200c00) == 0x38000400 || // post-indexed
                             (insn & 0x3b200c00) == 0x38000c00 || // pre-indexed
                             (insn & 0x3b200c00) == 0x38000000) { // unscaled
                             uint32_t opc = (insn >> 22) & 3;
-                            is_load = (opc != 0); // opc=0 is store, 1/2/3 are loads
-                            is_32bit = ((insn >> 22) & 1) == 0 && opc >= 2;
-                            // Pre/post indexed have writeback
+                            is_load = (opc != 0);
                             uint32_t idx_type = (insn >> 10) & 3;
-                            if (idx_type == 1 || idx_type == 3) // post=01, pre=11
+                            if (idx_type == 1 || idx_type == 3)
                                 has_writeback = 1;
                         }
-                        // LDR/LDRB/LDRH unsigned offset
-                        if ((insn & 0x3b400000) == 0x39400000) {
+                        if ((insn & 0x3b400000) == 0x39400000)
                             is_load = true;
-                        }
-                        // LDR register offset
                         if ((insn & 0x3b200c00) == 0x38200800) {
                             uint32_t opc = (insn >> 22) & 3;
                             is_load = (opc != 0);
                         }
-                        // LDP (load pair)
-                        if ((insn & 0x7fc00000) == 0xa9400000 || // LDP x
-                            (insn & 0x7fc00000) == 0x29400000) { // LDP w
+                        if ((insn & 0x7fc00000) == 0xa9400000 ||
+                            (insn & 0x7fc00000) == 0x29400000) {
                             is_load = true;
                             rn = (insn >> 5) & 0x1f;
                             uint32_t rt2 = (insn >> 10) & 0x1f;
@@ -576,10 +567,9 @@ void handle_interrupt(int interrupt) {
                         }
                         if (is_load && rt < 31) {
                             cpu->regs[rt] = 0;
-                            // Handle writeback for pre/post-indexed loads
                             if (has_writeback && rn < 31) {
                                 int32_t imm9 = (int32_t)((insn >> 12) & 0x1ff);
-                                if (imm9 & 0x100) imm9 |= ~0x1ff; // sign-extend
+                                if (imm9 & 0x100) imm9 |= ~0x1ff;
                                 cpu->regs[rn] = (cpu->regs[rn] + imm9) & 0xffffffffffffULL;
                             }
                             cpu->pc += 4;

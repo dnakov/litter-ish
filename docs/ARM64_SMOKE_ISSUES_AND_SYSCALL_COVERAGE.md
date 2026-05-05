@@ -90,7 +90,7 @@ The remaining risk is now concentrated less in common development syscalls and m
 
 ## 2026-05-04 high-value syscall gap closure
 
-Implemented and validated in `/workspace/tmp/ish-arm64-runtime-coverage-20260505-054944.md`:
+Implemented and validated in `/workspace/tmp/ish-arm64-runtime-coverage-20260505-072351.md`:
 
 - `signalfd4`
 - SysV semaphores: `semget`, `semctl`, `semop`, `semtimedop`
@@ -104,7 +104,7 @@ The staged runtime suite now has a dedicated C fixture named `high-value syscall
 
 ## 2026-05-04 OpenJDK DC ZVA closure
 
-OpenJDK 21 startup now passes after ARM64 iSH reports `DCZID_EL0 == 4` (64-byte DC ZVA block) and implements `dc zva` as a 64-byte naturally aligned zeroing operation. The staged runtime suite includes `arm64 DC ZVA sysreg/instruction`, and `/workspace/tmp/benchmarksgame-java-equivalent-smoke-20260505-055115.md` shows the Java-equivalent Benchmarks Game probe passing **10 / 10** under `-Xint -Xshare:off`.
+OpenJDK 21 startup now passes after ARM64 iSH reports `DCZID_EL0 == 4` (64-byte DC ZVA block) and implements `dc zva` as a 64-byte naturally aligned zeroing operation. The staged runtime suite includes `arm64 DC ZVA sysreg/instruction`, and `/workspace/tmp/benchmarksgame-java-equivalent-smoke-20260505-072530.md` shows the Java-equivalent Benchmarks Game probe passing **10 / 10** under `-Xint -Xshare:off`.
 
 Remaining Java work: default mixed-mode `java -version` and a trivial `java Hello` pass, but heavier default mixed-mode `javac` can still fail, so keep that as a separate HotSpot JIT/compiler correctness lane.
 
@@ -131,3 +131,7 @@ This is an ARM64 ISA correctness fix found while narrowing the remaining OpenJDK
 Guest stores now mark the last written page dirty, and the ARM64 asbestos loop invalidates compiled fiber blocks for that page at block boundaries. This closes a stale-translation bug for JIT/code-patching workloads: a guest can execute code from an RWX page, patch the instructions, then branch back through the same address and receive freshly translated bytes.
 
 The staged runtime suite includes `arm64 self-modifying code invalidation`, which executes a tiny `mov w0,#1; ret` function from an RWX page, patches it to `mov w0,#2; ret`, and verifies the second indirect call returns `2`. This is necessary production groundwork for HotSpot nmethod/inline-cache patching, although default mixed-mode `javac` still has a remaining compiler/generated-code correctness failure.
+
+## 2026-05-05 ARM64 generic read-fault recovery disabled
+
+The broad ARM64 fallback that synthesized zero for a small number of non-null unmapped read faults is now compile-time gated behind `ENABLE_ARM64_READ_FAULT_RECOVERY` and disabled in production builds. It was useful as a diagnostic compatibility shim, but it can hide real emulator/runtime bugs and corrupt compiler/JIT state by turning bad pointers into null-like values. HotSpot mixed-mode debugging now sees the real guest `SIGSEGV` path instead of a synthesized zero load.
