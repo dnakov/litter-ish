@@ -397,6 +397,15 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
             crash_retry_count = 0;
         }
 
+        // Guest writes may modify code (HotSpot inline-cache/nmethod patching,
+        // JITs, trampolines). Drop compiled blocks for the last written page at
+        // block boundaries so later execution sees freshly translated bytes.
+        // tlb->dirty_page is page-aligned (not PAGE()-shifted).
+        if (tlb->dirty_page != TLB_PAGE_EMPTY) {
+            asbestos_invalidate_page(asbestos, PAGE(tlb->dirty_page));
+            tlb->dirty_page = TLB_PAGE_EMPTY;
+        }
+
         // (debug trace removed)
 
         // Check if page table changed (mmap/munmap by another thread) EVERY BLOCK.

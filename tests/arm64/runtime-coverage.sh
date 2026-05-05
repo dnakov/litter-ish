@@ -296,6 +296,29 @@ int main(void) {
 }
 EOF
 
+    cat >"$dir/smc.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+int main(void) {
+    unsigned char *p = mmap(NULL, 4096, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return 1;
+    uint32_t code[] = {0x52800020, 0xd65f03c0}; // mov w0,#1; ret
+    memcpy(p, code, sizeof(code));
+    __builtin___clear_cache((char*)p, (char*)p + sizeof(code));
+    int (*fn)(void) = (int(*)(void))p;
+    int a = fn();
+    ((uint32_t*)p)[0] = 0x52800040; // mov w0,#2
+    __builtin___clear_cache((char*)p, (char*)p + sizeof(code));
+    int b = fn();
+    printf("smc %d %d\n", a, b);
+    return (a == 1 && b == 2) ? 0 : 2;
+}
+EOF
+
     cat >"$dir/signal_ucontext.c" <<'EOF'
 #define _GNU_SOURCE
 #include <signal.h>
@@ -520,6 +543,7 @@ main() {
     run_test c "arm64 DC ZVA sysreg/instruction" "cd '$GUEST_WORK/c' && gcc -O0 dczva.c -o dczva && ./dczva | grep -qx dczva-ok"
     run_test c "arm64 signal ucontext layout" "cd '$GUEST_WORK/c' && gcc -O0 signal_ucontext.c -o signal_ucontext && ./signal_ucontext | grep -qx signal-ucontext-ok"
     run_test c "arm64 CCMP/CCMN NV condition" "cd '$GUEST_WORK/c' && gcc -O0 ccmp_nv.c -o ccmp_nv && ./ccmp_nv | grep -qx ccmp-nv-ok"
+    run_test c "arm64 self-modifying code invalidation" "cd '$GUEST_WORK/c' && gcc -O0 smc.c -o smc && ./smc | grep -qx 'smc 1 2'"
 
     ensure_tools go
     prepare_go_fixture
