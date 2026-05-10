@@ -4,8 +4,8 @@ Date: 2026-05-10
 
 ## Known-good code
 
-- Commit: `c898346f` (`arm64: distinguish barrier synchronization gadgets`)
-- Tag: `arm64-openjdk21-prod-20260510-r2`
+- Commit: `4c1bc37c` (`util: fix timed wait normalization`)
+- Tag: `arm64-openjdk21-prod-20260510-r3`
 - Branch pushed: `master`
 - Remote pushed: `https://github.com/rcarmo/ish-arm64.git`
 
@@ -58,6 +58,7 @@ Date: 2026-05-10
 
 ## Rollback point
 
+- Roll back to `17d68ad6fbcedab918e883c1637f254f384c2a73` if the timed-wait cleanup tranche regresses production behavior.
 - Roll back to `b38c6239b08270889fc32a33c7095cf376785ba6` if the barrier-audit tranche regresses production behavior.
 - Roll back to `0711a849c96889c1225bf4e253607bbd8c4abd7d` if the platform/proc audit tranche regresses production behavior.
 - Roll back to `6ea7153e` only if Java C2/LDPSW behavior must be isolated from the Go `sigaltstack` fix.
