@@ -296,6 +296,38 @@ int main(void) {
 }
 EOF
 
+    cat >"$dir/barriers.c" <<'EOF'
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+
+static volatile uint64_t sink;
+
+int main(void) {
+    sink = 1;
+    __asm__ volatile("dmb sy" ::: "memory");
+    sink = 2;
+    __asm__ volatile("dmb ish" ::: "memory");
+    sink = 3;
+    __asm__ volatile("dmb ishld" ::: "memory");
+    sink = 4;
+    __asm__ volatile("dmb ishst" ::: "memory");
+    sink = 5;
+    __asm__ volatile("dsb sy" ::: "memory");
+    sink = 6;
+    __asm__ volatile("dsb ish" ::: "memory");
+    sink = 7;
+    __asm__ volatile("isb" ::: "memory");
+    atomic_thread_fence(memory_order_seq_cst);
+    if (sink != 7) {
+        fprintf(stderr, "bad sink=%llu\n", (unsigned long long)sink);
+        return 1;
+    }
+    puts("barriers-ok");
+    return 0;
+}
+EOF
+
     cat >"$dir/smc.c" <<'EOF'
 #include <stdint.h>
 #include <stdio.h>
@@ -545,6 +577,7 @@ main() {
     run_test c "arm64 signal ucontext layout" "cd '$GUEST_WORK/c' && gcc -O0 signal_ucontext.c -o signal_ucontext && ./signal_ucontext | grep -qx signal-ucontext-ok"
     run_test c "per-thread sigaltstack" "cd '$GUEST_WORK/c' && gcc -O0 sigaltstack_thread.c -o sigaltstack_thread -pthread && ./sigaltstack_thread | grep -qx sigaltstack-thread-ok"
     run_test c "arm64 CCMP/CCMN NV condition" "cd '$GUEST_WORK/c' && gcc -O0 ccmp_nv.c -o ccmp_nv && ./ccmp_nv | grep -qx ccmp-nv-ok"
+    run_test c "arm64 barriers DMB/DSB/ISB" "cd '$GUEST_WORK/c' && gcc -O0 barriers.c -o barriers && ./barriers | grep -qx barriers-ok"
     run_test c "arm64 self-modifying code invalidation" "cd '$GUEST_WORK/c' && gcc -O0 smc.c -o smc && ./smc | grep -qx 'smc 1 2'"
 
     ensure_tools go

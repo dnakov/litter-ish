@@ -6,7 +6,7 @@ Updated: 2026-05-10
 
 The current ARM64 Linux-host fakefs is in a good core-runtime state:
 
-- Staged runtime coverage: **27 / 27 passing**.
+- Staged runtime coverage: **28 / 28 passing**.
 - Benchmarks Game core tier: **9 official language rows × 10 benchmarks = 90 / 90 runs passing**.
 - Java-equivalent probe: **10 / 10 passing** in HotSpot default mixed mode; interpreter fallback mode also passes.
 - Native compiler rows additionally build inside the guest: **GCC 10 / 10 builds**, **G++ 10 / 10 builds**.
@@ -119,19 +119,19 @@ HotSpot uses guest SIGSEGV handlers for implicit null checks. ARM64 iSH now:
 
 The staged runtime suite includes `arm64 signal ucontext layout`, which intentionally dereferences null under a `SA_SIGINFO` handler and verifies the handler sees the expected PC/SP/LR context.
 
-Remaining Java work: default mixed-mode `javac` now gets past the original startup/signal-frame blockers but still fails later in generated/compiled HotSpot code with corrupted receiver/object state; keep that as the next JIT correctness target.
+2026-05-08 update: the later default mixed-mode `javac` blocker is closed by the ARM64 `LDPSW` pair-load sign-extension fix. Keep larger HotSpot/JIT stress workloads beyond the current smoke lane as future expansion.
 
 ## 2026-05-04 ARM64 CCMP/CCMN condition-code correction
 
 AArch64 conditional compare instructions (`CCMP`/`CCMN`) treat condition code 15 (`NV`) as condition-true, matching `AL` behavior for these instructions on hardware. ARM64 iSH previously treated `NV` as false and loaded the immediate NZCV fallback. The staged runtime suite now includes `arm64 CCMP/CCMN NV condition`, covering both subtract and add conditional-compare forms plus a false-condition NZCV fallback check.
 
-This is an ARM64 ISA correctness fix found while narrowing the remaining OpenJDK mixed-mode lane. It does **not** close default mixed-mode `javac`: that remains blocked by a later HotSpot compiler/generated-code correctness issue.
+This is an ARM64 ISA correctness fix found while narrowing the OpenJDK mixed-mode lane. The later default mixed-mode `javac` blocker was closed separately by the ARM64 `LDPSW` pair-load sign-extension fix.
 
 ## 2026-05-05 ARM64 self-modifying-code invalidation
 
 Guest stores now mark the last written page dirty, and the ARM64 asbestos loop invalidates compiled fiber blocks for that page at block boundaries. This closes a stale-translation bug for JIT/code-patching workloads: a guest can execute code from an RWX page, patch the instructions, then branch back through the same address and receive freshly translated bytes.
 
-The staged runtime suite includes `arm64 self-modifying code invalidation`, which executes a tiny `mov w0,#1; ret` function from an RWX page, patches it to `mov w0,#2; ret`, and verifies the second indirect call returns `2`. This is necessary production groundwork for HotSpot nmethod/inline-cache patching, although default mixed-mode `javac` still has a remaining compiler/generated-code correctness failure.
+The staged runtime suite includes `arm64 self-modifying code invalidation`, which executes a tiny `mov w0,#1; ret` function from an RWX page, patches it to `mov w0,#2; ret`, and verifies the second indirect call returns `2`. This is necessary production groundwork for HotSpot nmethod/inline-cache patching.
 
 ## 2026-05-05 ARM64 generic read-fault recovery disabled
 
@@ -140,3 +140,9 @@ The broad ARM64 fallback that synthesized zero for a small number of non-null un
 ## 2026-05-05 ARM64 fault diagnostics gated
 
 Noisy ARM64 fault diagnostics (`page fault ...`, register dumps, block instruction dumps, and `SIGNAL_TRACE`) are now quiet by default in production builds. Set `ISH_TRACE_FAULTS=1` when debugging guest fault delivery or JIT crashes. This keeps expected guest signal paths, including HotSpot implicit null checks, from spamming stderr while preserving an opt-in diagnostic path.
+
+## 2026-05-10 ARM64 barrier synchronization correction
+
+ARM64 iSH now keeps guest barrier classes distinct at translation time: `DMB` emits a host `dmb`, `DSB` emits a host `dsb`, and `ISB` emits a host `isb`. Because the current decoder folds all CRm shareability/domain variants into one gadget per barrier class, the `DMB` and `DSB` gadgets use the strongest host `sy` domain so guest `SY`/`LD`/`ST` forms are not under-serialized.
+
+The staged runtime suite includes `arm64 barriers DMB/DSB/ISB`, which compiles and executes common barrier encodings (`dmb sy`, `dmb ish`, `dmb ishld`, `dmb ishst`, `dsb sy`, `dsb ish`, and `isb`) inside the guest. Latest staged coverage is `/workspace/tmp/ish-arm64-runtime-coverage-20260510-101513.md` with **28 / 28 passing**.

@@ -1270,12 +1270,24 @@ atomic_casp_segfault:
     b fiber_exit
 
 /*
- * Memory barrier gadget for DMB/DSB/ISB and acquire/release semantics.
+ * Memory barrier/system-synchronization gadgets.
  * Since guest threads run as real host threads sharing the same physical
  * memory, guest memory ordering must be enforced with real host barriers.
  */
 .gadget dmb
-    dmb ish
+    // Decode currently folds all DMB CRm domains into one gadget; use the
+    // strongest host domain so DMB SY/LD/ST are never under-serialized.
+    dmb sy
+    gret
+
+.gadget dsb
+    // Decode currently folds all DSB CRm domains into one gadget; use the
+    // strongest host domain so DSB SY/LD/ST are never under-serialized.
+    dsb sy
+    gret
+
+.gadget isb
+    isb
     gret
 
 /*

@@ -56,7 +56,7 @@ The first tranche centralizes FD-path lookup, stat timestamp fields, host random
 
 ## Current coverage status
 
-Latest staged runtime report: **27 / 27 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260510-084353.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`). Base shell/APK, C, SysV IPC, high-value syscall gap coverage, ARM64 DC ZVA coverage, ARM64 signal-ucontext and per-thread `sigaltstack` coverage, ARM64 CCMP/CCMN NV-condition coverage, ARM64 self-modifying-code invalidation coverage, Go, Bun, and Node/npm are green in the Linux-host coverage harness. The current production package baseline is recorded in [docs/ARM64_PRODUCTION_BASELINE.md](docs/ARM64_PRODUCTION_BASELINE.md).
+Latest staged runtime report: **28 / 28 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260510-101513.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`). Base shell/APK, C, SysV IPC, high-value syscall gap coverage, ARM64 DC ZVA coverage, ARM64 signal-ucontext and per-thread `sigaltstack` coverage, ARM64 CCMP/CCMN NV-condition coverage, ARM64 DMB/DSB/ISB barrier coverage, ARM64 self-modifying-code invalidation coverage, Go, Bun, and Node/npm are green in the Linux-host coverage harness. The current production package baseline is recorded in [docs/ARM64_PRODUCTION_BASELINE.md](docs/ARM64_PRODUCTION_BASELINE.md).
 
 | Area | Status | Notes |
 |---|---:|---|
@@ -85,7 +85,7 @@ Validated so far:
 - 20 consecutive `bun -e "console.log(1)"` repro runs passed.
 - `setTimeout`, a minimal `Bun.serve` + `wget`, and PiClaw's web server now respond inside the guest.
 - PiClaw workspace bootstrap no longer logs the `ENOTSUP ... copyfile` warning when seeding `.pi/skills`.
-- Staged runtime coverage is now **27 / 27 passing**, including SysV shared-memory/message-queue IPC, high-value syscall gap coverage, ARM64 DC ZVA coverage, ARM64 signal-ucontext and per-thread `sigaltstack` coverage, ARM64 CCMP/CCMN NV-condition coverage, ARM64 self-modifying-code invalidation coverage, plus Bun install, TypeScript run, test, and build.
+- Staged runtime coverage is now **28 / 28 passing**, including SysV shared-memory/message-queue IPC, high-value syscall gap coverage, ARM64 DC ZVA coverage, ARM64 signal-ucontext and per-thread `sigaltstack` coverage, ARM64 CCMP/CCMN NV-condition coverage, ARM64 DMB/DSB/ISB barrier coverage, ARM64 self-modifying-code invalidation coverage, plus Bun install, TypeScript run, test, and build.
 
 ## Workload smoke tests
 
@@ -93,7 +93,7 @@ The current non-trivial workload results are grouped in [docs/ARM64_WORKLOAD_SMO
 
 Current highlights:
 
-- staged runtime coverage is **27 / 27 passing**;
+- staged runtime coverage is **28 / 28 passing**;
 - Bun + PiClaw now install/start far enough to serve the web UI and no longer hit the recursive `copyfile`/`ENOTSUP` bootstrap issue;
 - `rcarmo/go-gte` can now build, convert `gte-small.gtemodel` inside the guest, and complete `make run-go`; this exposed and fixed missing AdvSIMD `FCVTL`/`FCVTL2` support;
 - the Benchmarks Game core tier now has GCC, G++, Go, Python, Node.js, PHP, Perl, Ruby, and Lua rows passing, and the local Java-equivalent probe now passes 10/10 in HotSpot default mixed mode; all official language labels remain accounted for and tiered by Alpine aarch64 feasibility.

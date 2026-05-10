@@ -760,8 +760,10 @@ extern void gadget_atomic_rmw(void);
 extern void gadget_atomic_cas(void);
 extern void gadget_atomic_casp(void);
 
-// Memory barrier (DMB ISH) for acquire/release semantics
+// Memory barrier/system-synchronization gadgets
 extern void gadget_dmb(void);
+extern void gadget_dsb(void);
+extern void gadget_isb(void);
 extern void gadget_clrex(void);
 
 // Load/store pair gadgets
@@ -1767,12 +1769,19 @@ static int gen_branch(struct gen_state *state, uint32_t insn) {
         // DMB: 1101 0101 0000 0011 0011 CRm 1011 1111 = 0xd50330bf | (CRm << 8)
         // DSB: 1101 0101 0000 0011 0011 CRm 1001 1111 = 0xd503309f | (CRm << 8)
         // ISB: 1101 0101 0000 0011 0011 CRm 1101 1111 = 0xd50330df | (CRm << 8)
-        if ((insn & 0xfffff0ff) == 0xd50330bf ||  // DMB
-            (insn & 0xfffff0ff) == 0xd503309f ||  // DSB
-            (insn & 0xfffff0ff) == 0xd50330df) {  // ISB
-            // Guest threads run as real host threads sharing host memory,
-            // so guest barriers must issue real host barriers for correctness.
+        // Guest threads run as real host threads sharing host memory, so guest
+        // barriers must issue real host barriers. Keep DSB/ISB distinct: DSB
+        // is stronger than DMB, and ISB is an instruction-synchronization event.
+        if ((insn & 0xfffff0ff) == 0xd50330bf) {  // DMB
             gen(state, (unsigned long) gadget_dmb);
+            return 1;
+        }
+        if ((insn & 0xfffff0ff) == 0xd503309f) {  // DSB
+            gen(state, (unsigned long) gadget_dsb);
+            return 1;
+        }
+        if ((insn & 0xfffff0ff) == 0xd50330df) {  // ISB
+            gen(state, (unsigned long) gadget_isb);
             return 1;
         }
 
