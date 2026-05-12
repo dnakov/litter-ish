@@ -5,8 +5,8 @@ Reviewed: 2026-05-12
 
 ## Known-good code
 
-- Code commit: `4c1bc37c` (`util: fix timed wait normalization`)
-- Baseline tag: `arm64-openjdk21-prod-20260510-r3`
+- Code commit: `d8fcd200` (`audit: harden logging and mount option parsing`)
+- Baseline tag: `arm64-openjdk21-prod-20260510-r4`
 - Branch pushed: `master`
 - Remote pushed: `https://github.com/rcarmo/ish-arm64.git`
 
@@ -41,11 +41,11 @@ Reviewed: 2026-05-12
 
 ## Validation artifacts
 
-- Runtime coverage: `/workspace/tmp/ish-arm64-runtime-coverage-20260510-102148.md`
+- Runtime coverage: `/workspace/tmp/ish-arm64-runtime-coverage-20260512-065414.md`
   - Result: 28 / 28 passing
 - Go Benchmarks Game smoke: `/workspace/tmp/benchmarksgame-go-smoke-20260510-084223.md`
   - Result: 10 / 10 passing
-- Default mixed-mode Java Hello smoke: `/workspace/tmp/java-hello-sync-audit-20260510.log`
+- Default mixed-mode Java Hello smoke: `/workspace/tmp/java-hello-final-audit-20260512.log`
   - `javac_rc:0`
   - `java_rc:0`
 - Production baseline capture: `/workspace/tmp/ish-arm64-production-baseline-20260510.txt`
@@ -60,6 +60,7 @@ Reviewed: 2026-05-12
 
 ## Rollback point
 
+- Roll back to `c4f10affbc99b0038f45fa659730d669c5b10aa2` if the final logging/mount-option audit tranche regresses production behavior.
 - Roll back to `17d68ad6fbcedab918e883c1637f254f384c2a73` if the timed-wait cleanup tranche regresses production behavior.
 - Roll back to `b38c6239b08270889fc32a33c7095cf376785ba6` if the barrier-audit tranche regresses production behavior.
 - Roll back to `0711a849c96889c1225bf4e253607bbd8c4abd7d` if the platform/proc audit tranche regresses production behavior.
