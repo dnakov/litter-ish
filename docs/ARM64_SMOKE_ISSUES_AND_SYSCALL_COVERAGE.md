@@ -145,7 +145,7 @@ Noisy ARM64 fault diagnostics (`page fault ...`, register dumps, block instructi
 
 ARM64 iSH now keeps guest barrier classes distinct at translation time: `DMB` emits a host `dmb`, `DSB` emits a host `dsb`, and `ISB` emits a host `isb`. Because the current decoder folds all CRm shareability/domain variants into one gadget per barrier class, the `DMB` and `DSB` gadgets use the strongest host `sy` domain so guest `SY`/`LD`/`ST` forms are not under-serialized.
 
-The staged runtime suite includes `arm64 barriers DMB/DSB/ISB`, which compiles and executes common barrier encodings (`dmb sy`, `dmb ish`, `dmb ishld`, `dmb ishst`, `dsb sy`, `dsb ish`, and `isb`) inside the guest. Latest staged coverage is `/workspace/tmp/ish-arm64-runtime-coverage-20260512-070511.md` with **28 / 28 passing**.
+The staged runtime suite includes `arm64 barriers DMB/DSB/ISB`, which compiles and executes common barrier encodings (`dmb sy`, `dmb ish`, `dmb ishld`, `dmb ishst`, `dsb sy`, `dsb ish`, and `isb`) inside the guest. Latest staged coverage is `/workspace/tmp/ish-arm64-runtime-coverage-20260512-181051.md` with **28 / 28 passing**.
 
 ## 2026-05-12 production audit hardening
 
@@ -158,4 +158,4 @@ The post-production code-smell/logic audit fixed several low-risk but concrete r
 - Shebang optional-argument trimming no longer walks before the argument string when there is no optional argument.
 - `tools/ptraceomatic.c` now constructs `TERM=...` directly instead of reading memory before the pointer returned by `getenv("TERM")`.
 
-Validation after these changes: `make build-arm64-linux-all`, staged runtime coverage **28 / 28 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260512-070511.md`), and default mixed-mode Java Hello (`/workspace/tmp/java-hello-audit-pass2-20260512.log`, `javac_rc:0`, `java_rc:0`).
+Validation after these changes: `make build-arm64-linux-all`, staged runtime coverage **28 / 28 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260512-181051.md`), and default mixed-mode Java Hello (`/workspace/tmp/java-hello-audit-r5-20260512.log`, `javac_rc:0`, `java_rc:0`).
