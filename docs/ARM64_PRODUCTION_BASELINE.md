@@ -49,6 +49,7 @@ Reviewed: 2026-05-12
   - `javac_rc:0`
   - `java_rc:0`
 - Production baseline capture: `/workspace/tmp/ish-arm64-production-baseline-20260510.txt`
+- Local production deployment/post-deploy smoke: [ARM64_PRODUCTION_DEPLOYMENT.md](ARM64_PRODUCTION_DEPLOYMENT.md)
 
 ## Production-readiness notes
 
