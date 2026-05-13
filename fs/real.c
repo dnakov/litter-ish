@@ -151,11 +151,24 @@ int realfs_fstat(struct fd *fd, struct statbuf *fake_stat) {
     return 0;
 }
 
+static bool realfs_should_surface_eintr(void) {
+    if (current->group->doing_group_exit)
+        return true;
+    if (current->sighand != NULL) {
+        lock(&current->sighand->lock);
+        bool pending = !!(current->pending & ~current->blocked);
+        unlock(&current->sighand->lock);
+        if (pending)
+            return true;
+    }
+    return false;
+}
+
 ssize_t realfs_read(struct fd *fd, void *buf, size_t bufsize) {
     ssize_t res;
     do {
         res = read(fd->real_fd, buf, bufsize);
-    } while (res < 0 && errno == EINTR);
+    } while (res < 0 && errno == EINTR && !realfs_should_surface_eintr());
     if (res < 0)
         return errno_map();
     return res;
@@ -165,7 +178,7 @@ ssize_t realfs_write(struct fd *fd, const void *buf, size_t bufsize) {
     ssize_t res;
     do {
         res = write(fd->real_fd, buf, bufsize);
-    } while (res < 0 && errno == EINTR);
+    } while (res < 0 && errno == EINTR && !realfs_should_surface_eintr());
     if (res < 0)
         return errno_map();
     return res;

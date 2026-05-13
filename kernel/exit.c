@@ -221,8 +221,8 @@ noreturn void do_exit_group(int status) {
 
         // Wait for threads to exit (they're DETACHED so we can't join)
         // Poll the thread count until only current thread remains
-        int max_wait_ms = 500 + thread_count * 10;  // Scale with thread count
-        if (max_wait_ms > 5000) max_wait_ms = 5000;  // Cap at 5s
+        int max_wait_ms = 5000 + thread_count * 10;  // Scale with thread count
+        if (max_wait_ms > 10000) max_wait_ms = 10000;  // Cap at 10s
         int wait_interval_ms = 10;  // Check every 10ms
         int waited_ms = 0;
         int last_remaining = -1;

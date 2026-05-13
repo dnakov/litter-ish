@@ -1,6 +1,6 @@
 # ARM64 iSH workload smoke tests
 
-Updated: 2026-05-12
+Updated: 2026-05-13
 
 ## Purpose
 
@@ -19,7 +19,7 @@ A workload belongs here when it exercises at least one of these boundaries:
 
 | Workload | Current status | Why it was chosen | Latest useful log/report |
 |---|---:|---|---|
-| Staged runtime coverage | Passing, 28/28 | Fast regression gate for shell, `apk`, tmp I/O, C, SysV IPC, high-value syscall gap coverage, ARM64 DC ZVA coverage, ARM64 signal-ucontext and per-thread `sigaltstack` coverage, ARM64 CCMP/CCMN NV-condition coverage, ARM64 DMB/DSB/ISB barrier coverage, ARM64 self-modifying-code invalidation coverage, Go, Bun, Node/npm. Catches broad syscall/runtime regressions before heavier probes. | `/workspace/tmp/ish-arm64-runtime-coverage-20260512-181051.md` |
+| Staged runtime coverage | Passing, 44/44 | Fast regression gate for shell, `apk`, tmp I/O, C, SysV IPC, high-value syscall gap coverage, ARM64 DC ZVA coverage, ARM64 signal-ucontext and per-thread `sigaltstack` coverage, ARM64 CCMP/CCMN NV-condition coverage, ARM64 DMB/DSB/ISB barrier coverage, ARM64 self-modifying-code invalidation coverage, Go, Bun, Node/npm, Python, Lua, Java, Clojure, PyPy/Swift availability probes, Rust, Erlang, and Zig. Catches broad syscall/runtime regressions before heavier probes. | `/workspace/tmp/ish-arm64-runtime-coverage-20260513-072738.md` |
 | Bun + PiClaw bootstrap/server | Passing for install/start/web listen | Exercises modern JS runtime behavior: high `mmap` reservations, JSC GC signaling/timers, recursive package/workspace copies, sockets, HTTP serving, and PiClaw's startup probes. | `/workspace/tmp/piclaw-yolo-run-enotsup-fixed.log` and exposed server logs |
 | `rcarmo/go-gte` | Model conversion, `go test ./...`, and `make run-go` passing; `make go-build` still has upstream missing `cmd/test_gte` | Exercises Go toolchain, Python wheels, safetensors/numpy model conversion, 128 MB binary model I/O, FP16→FP32 AdvSIMD conversion, NEON math kernels, and Go runtime scheduling. | `docs/GO_GTE_PROGRESS.md` |
 | Benchmarks Game suite | GCC, G++, Go, Python, Node.js, PHP, Perl, Ruby, and Lua rows passing 10/10; Java-equivalent probe passing 10/10 in default mixed mode and interpreter fallback mode; source/language feasibility mapped | Broad cross-language benchmark corpus covering allocation, recursion, numeric FP, regex/text throughput, big integers, stdout/stdin streams, native compilers, managed runtimes, native compilers, SIMD portability, IPC, shared memory, and package availability. | [BENCHMARKSGAME_MATRIX.md](BENCHMARKSGAME_MATRIX.md), [BENCHMARKSGAME_GCC_SMOKE.md](BENCHMARKSGAME_GCC_SMOKE.md), [BENCHMARKSGAME_GPP_SMOKE.md](BENCHMARKSGAME_GPP_SMOKE.md), [BENCHMARKSGAME_GO_SMOKE.md](BENCHMARKSGAME_GO_SMOKE.md), [BENCHMARKSGAME_PYTHON_SMOKE.md](BENCHMARKSGAME_PYTHON_SMOKE.md), [BENCHMARKSGAME_NODE_SMOKE.md](BENCHMARKSGAME_NODE_SMOKE.md), [BENCHMARKSGAME_PHP_SMOKE.md](BENCHMARKSGAME_PHP_SMOKE.md), [BENCHMARKSGAME_PERL_SMOKE.md](BENCHMARKSGAME_PERL_SMOKE.md), [BENCHMARKSGAME_RUBY_SMOKE.md](BENCHMARKSGAME_RUBY_SMOKE.md), [BENCHMARKSGAME_LUA_SMOKE.md](BENCHMARKSGAME_LUA_SMOKE.md), [BENCHMARKSGAME_JAVA_EQUIVALENT_SMOKE.md](BENCHMARKSGAME_JAVA_EQUIVALENT_SMOKE.md) |
@@ -35,16 +35,16 @@ make test-arm64-runtime-coverage REPORT_DIR=/workspace/tmp TIMEOUT_S=120 INSTALL
 Latest result:
 
 ```text
-28 / 28 passing
-report: /workspace/tmp/ish-arm64-runtime-coverage-20260512-181051.md
+44 / 44 passing
+report: /workspace/tmp/ish-arm64-runtime-coverage-20260513-072738.md
 ```
 
 Why it matters:
 
 - Establishes the guest can boot, run shell commands, update package indexes, and do basic file I/O.
-- Confirms C compile/execute, SysV shared-memory/message-queue IPC across `fork()`, high-value syscall gaps, per-thread `sigaltstack`, and Go compile/run/build/test paths.
-- Keeps ARM64 generated-code-sensitive fixtures in the standard gate, including DC ZVA, signal `ucontext_t`, CCMP/CCMN `NV`, DMB/DSB/ISB barriers, and self-modifying-code invalidation.
-- Keeps Bun and Node/npm smoke coverage in the standard gate so JS runtime regressions are caught quickly.
+- Confirms C compile/execute, SysV shared-memory/message-queue IPC across `fork()`, high-value syscall gaps, per-thread `sigaltstack`, Go compile/run/build/test paths, and broad language smoke coverage through Java/Clojure/Python/Lua/Rust/Erlang/Zig.
+- Keeps ARM64 generated-code-sensitive fixtures in the standard gate, including DC ZVA, signal `ucontext_t`, CCMP/CCMN `NV`, DMB/DSB/ISB barriers, self-modifying-code invalidation, and Zig object-code generation/link execution.
+- Keeps Bun, Node/npm, Python, Lua, Java, Clojure, PyPy/Swift availability probes, Rust, Erlang, and Zig smoke coverage in the standard gate so runtime/toolchain regressions are caught quickly. Current Rust coverage is direct `rustc` compile/run/unit-test execution; Erlang coverage is BEAM version startup; Zig coverage uses `zig build-obj` plus a linked C harness while `zig test` is excluded pending the Alpine Zig 0.15.2 compiler-rt `f16` issue.
 
 ## Bun + PiClaw workload
 
@@ -153,7 +153,7 @@ Official labels observed in the site pages and first-pass Alpine 3.23 aarch64 pa
 | `racket` | ready-large | `racket` available. |
 | `csharpaot` | partial/external | `dotnet` packages exist, NativeAOT workload not yet verified. |
 | `fsharpcore` | partial/external | `dotnet` packages exist, F# SDK/workload not yet verified. |
-| `erlang` | blocked/needs investigation | Alpine v3.23 aarch64 index showed `erlang-ls` but no obvious Erlang runtime package. |
+| `erlang` | ready-large | `erlang27` is available and BEAM startup/version is covered by staged runtime coverage; a full Benchmarks Game Erlang row is not run yet. |
 | `chapel` | blocked | No Alpine aarch64 package found. |
 | `dartexe` | blocked | No Dart SDK package found; only `dart-sass-js`. |
 | `fpascal` | blocked | No Free Pascal package found. |
@@ -331,7 +331,7 @@ The next repeatable test should be tiered instead of pretending all 26 official 
 
 1. **Discovery tier** — scrape the active performance pages, list benchmark/language/source variants, and record unavailable labels explicitly.
 2. **Core tier** — run one representative implementation per benchmark for already-validated runtimes: `gcc`, `gpp`, `go`, `python3`, `node`, `php`, `perl`, `ruby`, `lua`.
-3. **Compiler tier** — add large but packaged compilers/runtimes: `rust`, `ghc`, `ocaml`, `sbcl`, `racket`, `gnat`.
+3. **Compiler/large-runtime tier** — add large but packaged compilers/runtimes: `rust`, `erlang`, `ghc`, `ocaml`, `sbcl`, `racket`, `gnat`.
 4. **External tier** — only after explicit setup: .NET NativeAOT/F#, GraalVM, and other non-Alpine toolchains if we decide to vendor or install them manually.
 5. **Unsupported ledger** — keep blocked official labels in the report so "all languages" means "all official labels accounted for", not silently skipped.
 

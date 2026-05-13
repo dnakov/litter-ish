@@ -24,6 +24,13 @@ We have been progressively hardening the ARM64 guest backend and replacing ad-ho
   - Go compile/run/build/test
   - Bun install/run/test/build
   - Node/npm version/eval/run
+  - Python and Lua version/eval smoke
+  - Java default mixed-mode and interpreter fallback smoke
+  - Clojure `clojure.main` eval smoke
+  - PyPy and Swift Alpine aarch64 availability probes
+  - Rust `rustc` compile/run/unit-test smoke
+  - Erlang BEAM version smoke
+  - Zig object build/link/run smoke
 - Added a Linux SDL/VNC terminal harness for interactive guest debugging:
   - `tools/ish_sdl_vnc.c`
   - `tools/run-sdl-vnc.sh`
@@ -56,10 +63,12 @@ The current split centralizes FD-path lookup, stat timestamp fields, host random
 - Added small atomic repro sources under `tests/arm64/atomics/` for LDXP/STLXP, CAS128, and CLREX+STXR/STXP semantics.
 - Stopped advertising optional ARM64 crypto/LSE features in `AT_HWCAP` until those helper sets are fully coverage-clean; runtimes can fall back to baseline FP/ASIMD paths.
 - Hardened production-adjacent launch and logging paths found during the final audit: bounded `printk`/`die` formatting, exact comma-separated mount-option parsing, bounded initial argv construction, safe `PT_INTERP` path loading, safe shebang argument trimming, and safe `TERM` environment construction in `ptraceomatic`.
+- Added bounded path/symlink expansion checks, guest-signal-aware `EINTR` surfacing for blocking read/write/socket paths, and a longer exit-group drain window so runtime helper threads can unwind without safety-valve leaks.
+- Extended user-readable ARM64 sysreg probes (`MIDR_EL1`, zero-valued feature/debug ID registers) and scalar FP16 conversion (`FCVT Sd,Hn` / `FCVT Dd,Hn`) for modern compiler/runtime CPU-feature paths.
 
 ## Current coverage status
 
-Latest staged runtime report: **28 / 28 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260512-181051.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`). Base shell/APK, C, SysV IPC, high-value syscall gap coverage, ARM64 DC ZVA coverage, ARM64 signal-ucontext and per-thread `sigaltstack` coverage, ARM64 CCMP/CCMN NV-condition coverage, ARM64 DMB/DSB/ISB barrier coverage, ARM64 self-modifying-code invalidation coverage, Go, Bun, and Node/npm are green in the Linux-host coverage harness. The current production package baseline is recorded in [docs/ARM64_PRODUCTION_BASELINE.md](docs/ARM64_PRODUCTION_BASELINE.md), and the local Linux production deployment/post-deploy Java smoke is recorded in [docs/ARM64_PRODUCTION_DEPLOYMENT.md](docs/ARM64_PRODUCTION_DEPLOYMENT.md).
+Latest staged runtime report: **44 / 44 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260513-072738.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`). Base shell/APK, C, SysV IPC, high-value syscall gap coverage, ARM64 DC ZVA coverage, ARM64 signal-ucontext and per-thread `sigaltstack` coverage, ARM64 CCMP/CCMN NV-condition coverage, ARM64 DMB/DSB/ISB barrier coverage, ARM64 self-modifying-code invalidation coverage, Go, Bun, Node/npm, Python, Lua, Java, Clojure, PyPy/Swift availability probes, Rust, Erlang, and Zig are green in the Linux-host coverage harness. The current production package baseline is recorded in [docs/ARM64_PRODUCTION_BASELINE.md](docs/ARM64_PRODUCTION_BASELINE.md), and the local Linux production deployment/post-deploy Java smoke is recorded in [docs/ARM64_PRODUCTION_DEPLOYMENT.md](docs/ARM64_PRODUCTION_DEPLOYMENT.md).
 
 | Area | Status | Notes |
 |---|---:|---|
@@ -71,10 +80,15 @@ Latest staged runtime report: **28 / 28 passing** (`/workspace/tmp/ish-arm64-run
 | ARM64 CCMP/CCMN NV | Passing | Conditional compare now treats condition code 15 (`NV`) like AArch64 hardware does for these instructions: condition true, not false-immediate fallback. |
 | ARM64 barriers | Passing | Guest `DMB`, `DSB`, and `ISB` decode to distinct host synchronization gadgets; folded CRm domains use conservative full-system host barriers. |
 | ARM64 self-modifying code | Passing | Guest writes to previously translated code pages invalidate stale translated blocks at block boundaries; required for JIT/code-patching workloads. |
-| Java/OpenJDK | Passing default mixed-mode smoke | OpenJDK 21.0.10 starts; default mixed-mode `javac Hello.java` and `java Hello` pass; Java-equivalent Benchmarks Game passes 10/10 in default mixed mode, with `JAVA_SMOKE_MODE=interpreter` still available as conservative fallback coverage. |
+| Java/OpenJDK | Passing default mixed-mode smoke | OpenJDK 21.0.10 starts; default mixed-mode `javac Hello.java`/`java Hello` and `-Xint` interpreter fallback pass; Java-equivalent Benchmarks Game passes 10/10 in default mixed mode. |
 | Go | Passing | `go version`, `go env`, `go tool compile`, `go run`, `go build`, `go test`, and Benchmarks Game Go 10/10 pass; per-thread `sigaltstack` handling now matches Linux for Go signal stacks. |
 | Node/npm | Passing | `node -e`, `npm --version`, and `npm run` pass after mmap/reservation and `pwritev` fixes. |
 | Bun | Passing | `bun --version`, local `file:` dependency install, TypeScript run, `bun test`, and `bun build` all pass in the staged harness. |
+| Python / Lua / Clojure | Passing smoke | `python3 --version`/eval, `lua5.4 -v`/eval, and `clojure.main` eval pass in the staged harness. |
+| PyPy / Swift | Accounted for | Availability probes pass by documenting that Alpine 3.23 aarch64 has no packaged PyPy or Swift toolchain in the current index. |
+| Rust | Passing | `rustc --version`, direct compile/run, and `rustc --test` unit-test execution pass without safety-valve leaks. Cargo remains outside the default gate pending a separate cargo-focused workload. |
+| Erlang | Passing version smoke | Alpine's BEAM package starts cleanly for `erl -version`; fuller `erl -noshell`/`erlc` module execution remains a follow-up lane. |
+| Zig | Passing | `zig version`, `zig build-obj`, and linking the Zig object into a C harness all pass. The gate avoids `zig test` because Alpine Zig 0.15.2 currently fails compiler-rt `f16` comptime compilation before guest code runs. |
 
 ## Bun status snapshot
 
@@ -89,7 +103,7 @@ Validated so far:
 - 20 consecutive `bun -e "console.log(1)"` repro runs passed.
 - `setTimeout`, a minimal `Bun.serve` + `wget`, and PiClaw's web server now respond inside the guest.
 - PiClaw workspace bootstrap no longer logs the `ENOTSUP ... copyfile` warning when seeding `.pi/skills`.
-- Staged runtime coverage is now **28 / 28 passing**, including SysV shared-memory/message-queue IPC, high-value syscall gap coverage, ARM64 DC ZVA coverage, ARM64 signal-ucontext and per-thread `sigaltstack` coverage, ARM64 CCMP/CCMN NV-condition coverage, ARM64 DMB/DSB/ISB barrier coverage, ARM64 self-modifying-code invalidation coverage, plus Bun install, TypeScript run, test, and build.
+- Staged runtime coverage is now **44 / 44 passing**, including SysV shared-memory/message-queue IPC, high-value syscall gap coverage, ARM64 DC ZVA coverage, ARM64 signal-ucontext and per-thread `sigaltstack` coverage, ARM64 CCMP/CCMN NV-condition coverage, ARM64 DMB/DSB/ISB barrier coverage, ARM64 self-modifying-code invalidation coverage, plus Bun install, TypeScript run, test, and build, and Python/Lua/Java/Clojure/PyPy/Swift/Rust/Erlang/Zig smoke or availability coverage.
 
 ## Workload smoke tests
 
@@ -97,7 +111,7 @@ The current non-trivial workload results are grouped in [docs/ARM64_WORKLOAD_SMO
 
 Current highlights:
 
-- staged runtime coverage is **28 / 28 passing**;
+- staged runtime coverage is **44 / 44 passing**;
 - Bun + PiClaw now install/start far enough to serve the web UI and no longer hit the recursive `copyfile`/`ENOTSUP` bootstrap issue;
 - `rcarmo/go-gte` can now build, convert `gte-small.gtemodel` inside the guest, and complete `make run-go`; this exposed and fixed missing AdvSIMD `FCVTL`/`FCVTL2` support;
 - the Benchmarks Game core tier now has GCC, G++, Go, Python, Node.js, PHP, Perl, Ruby, and Lua rows passing, and the local Java-equivalent probe now passes 10/10 in HotSpot default mixed mode; all official language labels remain accounted for and tiered by Alpine aarch64 feasibility.

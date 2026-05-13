@@ -3683,6 +3683,10 @@ msub_store:
 //   9 = ID_AA64ISAR0_EL1
 //  10 = ID_AA64ISAR1_EL1
 //  11 = ID_AA64ZFR0_EL1
+//  12 = CNTVCT_EL0
+//  13 = CNTFRQ_EL0
+//  14 = MIDR_EL1
+//  15 = zero-valued feature/debug ID register
 .gadget mrs_sysreg
     ldr x8, [_pc]           // rt
     ldr x11, [_pc, #8]      // sysreg_id
@@ -3719,6 +3723,10 @@ msub_store:
     b.eq .Lmrs_cntvct_el0
     cmp x11, #13
     b.eq .Lmrs_cntfrq_el0
+    cmp x11, #14
+    b.eq .Lmrs_midr_el1
+    cmp x11, #15
+    b.eq .Lmrs_zero
     // Unknown sysreg - return 0
     mov x10, #0
     b .Lmrs_store
@@ -3805,6 +3813,17 @@ msub_store:
 .Lmrs_cntfrq_el0:
     // CNTFRQ_EL0 - Counter-timer frequency
     mrs x10, cntfrq_el0
+    b .Lmrs_store
+
+.Lmrs_midr_el1:
+    // MIDR_EL1 - expose a generic ARMv8 Cortex-A53-class ID. Optional
+    // features remain governed by HWCAP/ID_AA64* registers above.
+    movz x10, #0xd034
+    movk x10, #0x410f, lsl #16
+    b .Lmrs_store
+
+.Lmrs_zero:
+    mov x10, #0
     b .Lmrs_store
 
 .Lmrs_store:
@@ -13679,6 +13698,49 @@ make_fcvt_to_int fcvtau, fcvtau, fcvtau, fcvtau, fcvtau
 .Lfp_dp1_store_s:
     str s0, [x15]
     str xzr, [x15, #4]
+    str xzr, [x15, #8]
+    gret
+
+/*
+ * FCVT Sd, Hn / FCVT Dd, Hn - scalar FP16 to FP32/FP64 conversion.
+ * Code stream: [gadget addr][rd | rn<<8]
+ */
+.gadget fcvt_h_to_s_scalar
+    ldr x8, [_pc]
+    add _pc, _pc, #8
+
+    and x9, x8, #0x1f       // rd
+    ubfx x10, x8, #8, #5    // rn
+
+    add x13, _cpu, #CPU_fp
+    lsl x14, x10, #4
+    add x14, x13, x14
+    ldr h0, [x14]
+    fcvt s0, h0
+
+    lsl x15, x9, #4
+    add x15, x13, x15
+    str s0, [x15]
+    str xzr, [x15, #4]
+    str xzr, [x15, #8]
+    gret
+
+.gadget fcvt_h_to_d_scalar
+    ldr x8, [_pc]
+    add _pc, _pc, #8
+
+    and x9, x8, #0x1f       // rd
+    ubfx x10, x8, #8, #5    // rn
+
+    add x13, _cpu, #CPU_fp
+    lsl x14, x10, #4
+    add x14, x13, x14
+    ldr h0, [x14]
+    fcvt d0, h0
+
+    lsl x15, x9, #4
+    add x15, x13, x15
+    str d0, [x15]
     str xzr, [x15, #8]
     gret
 

@@ -797,6 +797,19 @@ static inline int fast_fstat64(struct cpu_state *cpu) {
     return 0;  // Success
 }
 
+static inline bool syscall_should_surface_eintr(void) {
+    if (current->group->doing_group_exit)
+        return true;
+    if (current->sighand != NULL) {
+        lock(&current->sighand->lock);
+        bool pending = !!(current->pending & ~current->blocked);
+        unlock(&current->sighand->lock);
+        if (pending)
+            return true;
+    }
+    return false;
+}
+
 // Fast path for read (syscall 63) - small buffers only
 static inline int fast_read(struct cpu_state *cpu) {
     fd_t fd_no = (fd_t)cpu->regs[0];
@@ -811,12 +824,16 @@ static inline int fast_read(struct cpu_state *cpu) {
     if (fd == NULL || fd->ops != &realfs_fdops)
         return -1;
 
-    // Direct host read (with EINTR retry)
+    // Direct host read. Retry spurious host EINTR, but surface guest signals
+    // (especially exit_group SIGKILL) so helper threads blocked in pipes can
+    // leave cleanly instead of being detached by the exit safety valve.
     char buf[4096];
     ssize_t res;
     do {
+        if (current->group->doing_group_exit)
+            return _EINTR;
         res = read(fd->real_fd, buf, size);
-    } while (res < 0 && errno == EINTR);
+    } while (res < 0 && errno == EINTR && !syscall_should_surface_eintr());
 
     if (res < 0)
         return errno_map();

@@ -663,6 +663,8 @@ static int sock_wait_for(int real_fd, short events, int timeout_opt) {
     long deadline_ms = (timeout_ms > 0) ? (start_ms + timeout_ms) : 0;
     bool slow_logged = false;
     for (;;) {
+        if (current->exiting || current->group->doing_group_exit)
+            return _EINTR;
         if (current->sighand != NULL) {
             lock(&current->sighand->lock);
             bool pending = !!(current->pending & ~current->blocked);
@@ -671,7 +673,10 @@ static int sock_wait_for(int real_fd, short events, int timeout_opt) {
                 return _EINTR;
         }
 
-        int poll_ms = 1000;
+        // Keep this shorter than exit_group's safety-valve window so helper
+        // threads blocked in recv/recvmsg can observe SIGKILL/exiting and
+        // leave cleanly instead of being detached as leaked host threads.
+        int poll_ms = 50;
         if (deadline_ms > 0) {
             long remaining = deadline_ms - monotonic_ms();
             if (remaining <= 0) {
@@ -688,6 +693,8 @@ static int sock_wait_for(int real_fd, short events, int timeout_opt) {
         int pr = poll(&pfd, 1, poll_ms);
         int saved_errno = errno;
         current->blocking = false;
+        if (current->exiting || current->group->doing_group_exit)
+            return _EINTR;
 
         if (pr > 0)
             return 0;

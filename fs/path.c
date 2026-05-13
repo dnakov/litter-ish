@@ -117,9 +117,12 @@ static int __path_normalize(const char *at_path, const char *path, char *out, in
         return _ENOENT;
 
     if (at_path != NULL && strcmp(at_path, "/") != 0) {
-        strcpy(o, at_path);
-        n -= strlen(at_path);
-        o += strlen(at_path);
+        size_t at_len = strlen(at_path);
+        if (at_len >= MAX_PATH)
+            return _ENAMETOOLONG;
+        memcpy(o, at_path, at_len + 1);
+        n -= at_len;
+        o += at_len;
     }
 
     while (*p == '/')
@@ -177,16 +180,25 @@ static int __path_normalize(const char *at_path, const char *path, char *out, in
                 mount_release(mount);
                 if (levels >= 5)
                     return _ELOOP;
-                // readlink does not null terminate
+                // readlink does not null terminate. A full-buffer result leaves
+                // no room for the terminator in out/possible_symlink.
+                size_t link_room = MAX_PATH - (size_t)(c - out);
+                if ((size_t)res >= link_room)
+                    return _ENAMETOOLONG;
                 c[res] = '\0';
                 // if we should restart from the root, copy down
                 if (*c == '/')
                     memmove(out, c, strlen(c) + 1);
+                size_t out_len = strlen(out);
+                size_t rest_len = strlen(p);
+                bool have_rest = rest_len != 0;
+                if (out_len + (have_rest ? 1 + rest_len : 0) >= MAX_PATH)
+                    return _ENAMETOOLONG;
                 char *expanded_path = possible_symlink;
-                strcpy(expanded_path, out);
-                if (strcmp(p, "") != 0) {
-                    strcat(expanded_path, "/");
-                    strcat(expanded_path, p);
+                memcpy(expanded_path, out, out_len + 1);
+                if (have_rest) {
+                    expanded_path[out_len] = '/';
+                    memcpy(expanded_path + out_len + 1, p, rest_len + 1);
                 }
                 return __path_normalize(NULL, expanded_path, out, flags, levels + 1);
             }

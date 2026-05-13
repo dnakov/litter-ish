@@ -1,6 +1,6 @@
 # Benchmarks Game ARM64 iSH success matrix
 
-Generated: 2026-05-03T16:20:49+00:00
+Generated: 2026-05-13T07:45:44+00:00
 
 This is the discovery matrix for the next ARM64 iSH workload gate. It accounts for every official language/runtime label observed on the current Benchmarks Game performance pages and classifies whether each label is runnable with Alpine aarch64 packages, large-but-feasible, external/partial, or blocked.
 
@@ -23,9 +23,8 @@ Legend:
 | Feasibility | Languages |
 |---|---:|
 | ready | 10 |
-| ready-large | 5 |
+| ready-large | 6 |
 | partial/external | 2 |
-| blocked/needs-investigation | 1 |
 | blocked/external | 1 |
 | blocked | 7 |
 
@@ -36,7 +35,7 @@ Legend:
 | chapel | blocked | 23 | X | X | X | X | X | X | X | X | X | X | no Alpine aarch64 package found |
 | csharpaot | partial/external | 54 | P | P | P | P | P | P | P | P | P | P | dotnet packages exist; NativeAOT not verified |
 | dartexe | blocked | 43 | X | X | X | X | X | X | X | X | X | X | no Dart SDK package found |
-| erlang | blocked/needs-investigation | 21 | ? | ? | ? | ? | ? | ? | ? | ? | ? | ? | no obvious Erlang runtime in Alpine 3.23 aarch64 index |
+| erlang | ready-large | 21 | L | L | L | L | L | L | L | L | L | L | erlang27 available; BEAM startup smoke passes, full row not yet run |
 | fpascal | blocked | 23 | X | X | X | — | X | X | X | X | X | X | no Free Pascal package found |
 | fsharpcore | partial/external | 35 | P | P | P | P | P | P | P | P | P | P | dotnet packages exist; F# SDK/workload not verified |
 | gcc | ready | 56 | R | R | R | R | R | R | R | R | R | R | gcc |
@@ -93,6 +92,7 @@ Legend:
 | ruby | main |
 | lua5.3 | main |
 | lua5.4 | main |
+| erlang27 | community |
 | ghc | community |
 | ocaml | community |
 | sbcl | community |
@@ -103,7 +103,7 @@ Legend:
 ## Next execution tiers
 
 1. Core tier: `gcc`, `gpp`, `go`, `python3`, `node`, `php`, `perl`, `ruby`, `lua` across all 10 benchmarks with smoke-sized inputs.
-2. Compiler tier: add `gnat`, `rust`, `ghc`, `ocaml`, `sbcl`, `racket` once package install cost is acceptable.
+2. Compiler/large-runtime tier: add `gnat`, `rust`, `erlang`, `ghc`, `ocaml`, `sbcl`, `racket` once package install cost is acceptable.
 3. External tier: attempt .NET/F#, GraalVM, and other non-Alpine labels only after explicit toolchain setup.
 4. Blocked ledger: keep `X`/`?` labels in this matrix until they have a real runner or a documented reason they cannot run on Alpine aarch64.
 

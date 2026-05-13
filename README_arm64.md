@@ -291,7 +291,13 @@ The coverage script currently exercises, in order:
 10. Per-thread `sigaltstack` coverage for pthread/Go-style signal stacks;
 11. Go (`go version`, `go env`, `go tool compile`, `go run`, `go build`, `go test`);
 12. Bun (`bun --version`, local `file:` dependency install, TypeScript run, test, build);
-13. Node/npm (`node --version`, `node -e`, `npm --version`, `npm run`).
+13. Node/npm (`node --version`, `node -e`, `npm --version`, `npm run`);
+14. Python (`python3 --version`, eval) and Lua (`lua5.4 -v`, eval);
+15. Java (`javac` + default mixed-mode `java`, interpreter fallback) and Clojure (`clojure.main` eval);
+16. PyPy and Swift Alpine aarch64 availability probes;
+17. Rust (`rustc --version`, direct compile/run, `rustc --test` unit-test execution);
+18. Erlang (`erl -version` BEAM startup smoke);
+19. Zig (`zig version`, `zig build-obj`, linked object execution through a C harness).
 
 Each run writes a Markdown report named
 `ish-arm64-runtime-coverage-YYYYMMDD-HHMMSS.md` under `REPORT_DIR`. The suite is
@@ -300,7 +306,7 @@ to debug, not as cases to skip.
 
 Current Linux-host status from this pass:
 
-- Latest staged run: **28 / 28 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260512-181051.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`).
+- Latest staged run: **44 / 44 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260513-072738.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`).
 - Production package baseline: [docs/ARM64_PRODUCTION_BASELINE.md](docs/ARM64_PRODUCTION_BASELINE.md) (`alpine-arm64-fakefs` on Alpine 3.23.4 with OpenJDK 21.0.10_p7-r0; current audit tag `arm64-openjdk21-prod-20260510-r5`).
 - Non-trivial workload probes are grouped in [docs/ARM64_WORKLOAD_SMOKE_TESTS.md](docs/ARM64_WORKLOAD_SMOKE_TESTS.md): Bun/PiClaw, `rcarmo/go-gte`, and the Benchmarks Game rows.
 - C coverage is green: `gcc --version`, compile, and execute all pass.
@@ -321,6 +327,22 @@ Current Linux-host status from this pass:
   and a PiClaw YOLO direct install/web startup smoke also passed.
 - Node/npm coverage is green: `node --version`, `node -e`, `npm --version`, and
   `npm run` pass without the previous noisy `pwritev` stubs.
+- Python and Lua smoke coverage is green: `python3 --version`, Python eval,
+  `lua5.4 -v`, and Lua eval all pass.
+- Java and Clojure smoke coverage is green: default mixed-mode `javac`/`java`,
+  Java interpreter fallback, and `clojure.main` eval all pass.
+- PyPy and Swift availability probes are green by recording that Alpine 3.23
+  aarch64 currently has no packaged PyPy or Swift toolchain in the index.
+- Rust coverage is green for direct `rustc` paths: version, compile/run, and
+  `rustc --test` unit-test execution pass without safety-valve leaks. Cargo is
+  intentionally not in the default gate yet pending a separate cargo-focused
+  workload.
+- Erlang coverage is green for BEAM startup/version (`erl -version`). Fuller
+  `erl -noshell`/`erlc` module execution remains follow-up work.
+- Zig coverage is green for compiler/object paths: version, `zig build-obj`, and
+  linked object execution through a C harness pass. `zig test` is kept out of the
+  gate because Alpine Zig 0.15.2 fails compiler-rt `f16` comptime compilation
+  before guest code runs; this is tracked separately from emulator execution.
 - Fixed lazy `MAP_NORESERVE` reservation permissions: `mprotect()` now updates
   reservation metadata, so later demand faults materialize pages with the new
   permissions. This fixed the Node/V8 `0xb00c0000` write fault.

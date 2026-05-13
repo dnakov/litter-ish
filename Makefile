@@ -19,7 +19,7 @@ help:
 	@echo "  make build-arm64-linux              Build release Linux host binary"
 	@echo "  make build-arm64-linux-debug        Build debug Linux host binary"
 	@echo "  make build-arm64-linux-all          Build release + debug"
-	@echo "  make test-arm64-runtime-coverage    Run staged Go/Bun/Node/npm coverage"
+	@echo "  make test-arm64-runtime-coverage    Run staged C/Go/Bun/Node/Python/Lua/Java/Clojure/PyPy/Swift/Rust/Erlang/Zig coverage"
 	@echo "  make test-arm64-runtime-coverage-debug"
 	@echo "                                      Run coverage against debug binary"
 	@echo ""

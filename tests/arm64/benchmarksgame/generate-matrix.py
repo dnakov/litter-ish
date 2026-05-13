@@ -63,7 +63,7 @@ LANGUAGE_STATUS = {
     "racket": ("ready-large", "racket"),
     "csharpaot": ("partial/external", "dotnet packages exist; NativeAOT not verified"),
     "fsharpcore": ("partial/external", "dotnet packages exist; F# SDK/workload not verified"),
-    "erlang": ("blocked/needs-investigation", "no obvious Erlang runtime in Alpine 3.23 aarch64 index"),
+    "erlang": ("ready-large", "erlang27 available; BEAM startup smoke passes, full row not yet run"),
     "chapel": ("blocked", "no Alpine aarch64 package found"),
     "dartexe": ("blocked", "no Dart SDK package found"),
     "fpascal": ("blocked", "no Free Pascal package found"),
@@ -213,7 +213,7 @@ def build_report(variants: list[Variant], packages: dict[str, str]) -> str:
 
     lines.append("## Alpine package spot-check")
     lines.append("")
-    package_names = ["gcc", "g++", "gcc-gnat", "go", "rust", "cargo", "python3", "nodejs", "npm", "php84", "perl", "ruby", "lua5.3", "lua5.4", "ghc", "ocaml", "sbcl", "racket", "mono", "dotnet-host"]
+    package_names = ["gcc", "g++", "gcc-gnat", "go", "rust", "cargo", "python3", "nodejs", "npm", "php84", "perl", "ruby", "lua5.3", "lua5.4", "erlang27", "ghc", "ocaml", "sbcl", "racket", "mono", "dotnet-host"]
     lines.append("| Package | Repository |")
     lines.append("|---|---|")
     for pkg in package_names:
@@ -223,7 +223,7 @@ def build_report(variants: list[Variant], packages: dict[str, str]) -> str:
     lines.append("## Next execution tiers")
     lines.append("")
     lines.append("1. Core tier: `gcc`, `gpp`, `go`, `python3`, `node`, `php`, `perl`, `ruby`, `lua` across all 10 benchmarks with smoke-sized inputs.")
-    lines.append("2. Compiler tier: add `gnat`, `rust`, `ghc`, `ocaml`, `sbcl`, `racket` once package install cost is acceptable.")
+    lines.append("2. Compiler/large-runtime tier: add `gnat`, `rust`, `erlang`, `ghc`, `ocaml`, `sbcl`, `racket` once package install cost is acceptable.")
     lines.append("3. External tier: attempt .NET/F#, GraalVM, and other non-Alpine labels only after explicit toolchain setup.")
     lines.append("4. Blocked ledger: keep `X`/`?` labels in this matrix until they have a real runner or a documented reason they cannot run on Alpine aarch64.")
     lines.append("")

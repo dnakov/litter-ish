@@ -60,7 +60,7 @@ run_test() {
 
     TOTAL_COUNT=$((TOTAL_COUNT + 1))
     printf '[%s] %s ... ' "$stage" "$name"
-    if guest_capture "$cmd" >"$out" 2>&1 && grep -q '^__ISH_STATUS:0$' "$out"; then
+    if guest_capture "$cmd" >"$out" 2>&1 && grep -q '^__ISH_STATUS:0$' "$out" && ! grep -q 'SAFETY-VALVE' "$out"; then
         PASS_COUNT=$((PASS_COUNT + 1))
         echo "PASS"
         append_row "$stage" "$name" "PASS" "$(grep -v '^__ISH_STATUS:' "$out" | sed -n '1,6p' | sed 's/|/\\|/g')"
@@ -533,6 +533,112 @@ EOF
     push_tree "$dir" "$GUEST_WORK/node"
 }
 
+prepare_rust_fixture() {
+    local dir="$HOST_TMP/rust"
+    mkdir -p "$dir/src" "$dir/tests"
+    cat >"$dir/Cargo.toml" <<'EOF'
+[package]
+name = "runtime_coverage"
+version = "0.1.0"
+edition = "2021"
+
+[profile.dev]
+debug = 0
+EOF
+    cat >"$dir/src/lib.rs" <<'EOF'
+pub fn checksum(input: &[u8]) -> u64 {
+    input.iter().fold(0u64, |acc, b| acc.wrapping_mul(131).wrapping_add(*b as u64))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checksum;
+
+    #[test]
+    fn checksum_is_stable() {
+        assert_eq!(checksum(b"rust-runtime"), 9534429477999140727);
+    }
+}
+EOF
+    cat >"$dir/src/main.rs" <<'EOF'
+fn main() {
+    let value = runtime_coverage::checksum(b"rust-runtime");
+    println!("rust-runtime-ok {value}");
+}
+EOF
+    cat >"$dir/hello.rs" <<'EOF'
+fn main() {
+    let sum: u64 = (1..=100).sum();
+    println!("rustc-runtime-ok {sum}");
+}
+EOF
+    cat >"$dir/tests/smoke.rs" <<'EOF'
+#[test]
+fn integration_smoke() {
+    assert_eq!(runtime_coverage::checksum(b"abc"), 1677554);
+}
+EOF
+    push_tree "$dir" "$GUEST_WORK/rust"
+}
+
+prepare_erlang_fixture() {
+    local dir="$HOST_TMP/erlang"
+    mkdir -p "$dir"
+    cat >"$dir/runtime_coverage.erl" <<'EOF'
+-module(runtime_coverage).
+-export([main/0, checksum/1]).
+
+checksum(Bin) when is_binary(Bin) ->
+    lists:foldl(fun(B, Acc) -> ((Acc * 131) + B) band 16#ffffffffffffffff end, 0, binary_to_list(Bin)).
+
+main() ->
+    case checksum(<<"erlang-runtime">>) of
+        11736296863384415574 ->
+            io:format("erlang-runtime-ok~n"),
+            halt(0);
+        Other ->
+            io:format("bad-checksum ~p~n", [Other]),
+            halt(1)
+    end.
+EOF
+    push_tree "$dir" "$GUEST_WORK/erlang"
+}
+
+prepare_zig_fixture() {
+    local dir="$HOST_TMP/zig"
+    mkdir -p "$dir"
+    cat >"$dir/main.zig" <<'EOF'
+fn checksum(bytes: []const u8) u64 {
+    var acc: u64 = 0;
+    for (bytes) |b| {
+        acc = acc *% 131 +% b;
+    }
+    return acc;
+}
+
+export fn zig_runtime_checksum() u64 {
+    return checksum("zig-runtime");
+}
+EOF
+    cat >"$dir/harness.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t zig_runtime_checksum(void);
+
+int main(void) {
+    uint64_t got = zig_runtime_checksum();
+    if (got != 13593902126957356019ULL) {
+        printf("zig-runtime-bad %llu\n", (unsigned long long)got);
+        return 1;
+    }
+    printf("zig-runtime-ok %llu\n", (unsigned long long)got);
+    return 0;
+}
+EOF
+    push_tree "$dir" "$GUEST_WORK/zig"
+}
+
 write_report() {
     cat >"$REPORT" <<EOF
 # iSH ARM64 Runtime Coverage Report
@@ -602,6 +708,33 @@ main() {
     run_test node "node eval" "node -e 'console.log(1+1)' | grep -qx 2"
     run_test node "npm version" "npm --version"
     run_test node "node run" "cd '$GUEST_WORK/node' && npm run --silent start | grep -qx node-runtime-ok"
+
+    ensure_tools python3 lua5.4 openjdk21-jdk:javac clojure
+    run_test python "python3 version" "python3 --version"
+    run_test python "python3 eval" "python3 -c 'print(\"python-runtime-ok\", sum(range(10)))' | grep -qx 'python-runtime-ok 45'"
+    run_test lua "lua5.4 version" "lua5.4 -v"
+    run_test lua "lua5.4 eval" "lua5.4 -e 'print(\"lua-runtime-ok\", 2+3)' | grep -q '^lua-runtime-ok[[:space:]]*5$'"
+    run_test java "javac + java" "cd '$GUEST_WORK' && printf '%s\n' 'public class Hello { public static void main(String[] args) { System.out.println(\"java-runtime-ok\"); } }' > Hello.java && javac Hello.java && java -cp . Hello | grep -qx java-runtime-ok"
+    run_test java "java interpreter fallback" "cd '$GUEST_WORK' && java -Xint -cp . Hello | grep -qx java-runtime-ok"
+    run_test clojure "clojure.main eval" "java -cp /usr/share/clojure/clojure.jar clojure.main -e '(println \"clojure-runtime-ok\" (+ 1 2 3))' | grep -qx 'clojure-runtime-ok 6'"
+    run_test pypy "availability probe" "if command -v pypy3 >/dev/null 2>&1; then pypy3 -c 'print(\"pypy-runtime-ok\")' | grep -qx pypy-runtime-ok; else ! apk search pypy | grep -E '(^|-)pypy3?(-|$)' && echo pypy-unavailable-alpine-aarch64; fi"
+    run_test swift "availability probe" "if command -v swift >/dev/null 2>&1; then swift --version; elif command -v swiftc >/dev/null 2>&1; then swiftc --version; else ! apk search swift | grep -E '(^|-)swift(c)?(-|$)' && echo swift-unavailable-alpine-aarch64; fi"
+
+    ensure_tools rust:rustc
+    prepare_rust_fixture
+    run_test rust "rustc version" "rustc --version"
+    run_test rust "rustc compile + run" "cd '$GUEST_WORK/rust' && rustc hello.rs -o rustc_app && ./rustc_app | grep -qx 'rustc-runtime-ok 5050'"
+    run_test rust "rustc unit tests" "cd '$GUEST_WORK/rust' && rustc --test src/lib.rs -o lib_tests && ./lib_tests --quiet"
+
+    ensure_tools erlang:erl
+    prepare_erlang_fixture
+    run_test erlang "erl version" "erl -version 2>&1 | grep -q 'BEAM.*emulator version'"
+
+    ensure_tools zig
+    prepare_zig_fixture
+    run_test zig "zig version" "zig version"
+    run_test zig "zig build-obj" "cd '$GUEST_WORK/zig' && zig build-obj main.zig -O Debug -femit-bin=zig_runtime.o && test -s zig_runtime.o"
+    run_test zig "zig object link + run" "cd '$GUEST_WORK/zig' && zig build-obj main.zig -O Debug -femit-bin=zig_runtime.o && gcc harness.c zig_runtime.o -o zig_app && ./zig_app | grep -q '^zig-runtime-ok '"
 
     write_report
     echo "report: $REPORT"

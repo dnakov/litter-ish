@@ -140,7 +140,7 @@ Validation after the fix:
 
 - `make build-arm64-linux-all` passes.
 - 50 consecutive minimal Bun local `file:` install repro runs passed.
-- staged runtime coverage is now **28 / 28 passing** after subsequent syscall, signal, Java, barrier, and runtime fixture additions.
+- staged runtime coverage is now **44 / 44 passing** after subsequent syscall, signal, Java, barrier, Python/Lua/Clojure, Rust, Erlang, Zig, and runtime fixture additions.
 
 
 ## JavaScriptCore GC compatibility shims
@@ -256,7 +256,27 @@ Directory reads now propagate or infer Linux `DT_*` values:
 
 Validation: a minimal Bun recursive `fs.cpSync` directory tree copy succeeds,
 PiClaw no longer logs the bootstrap `ENOTSUP ... copyfile` warning, and staged
-runtime coverage remains **28 / 28 passing**.
+runtime coverage remains **44 / 44 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260513-072738.md`).
+
+## Blocking I/O and exit cleanup
+
+Files:
+
+- `fs/real.c`
+- `fs/sock.c`
+- `kernel/calls.c`
+- `kernel/exit.c`
+
+Guest-visible signals must be able to break host blocking I/O during process
+shutdown. The realfs read/write path, the fast small-buffer read path, and socket
+poll waits now retry spurious host `EINTR`, but surface `_EINTR` when the guest
+has a pending unblocked signal or the thread group is exiting. Socket waits also
+use a short poll interval so helper threads blocked in `recv`/`recvmsg` can
+observe `exit_group` promptly.
+
+`exit_group` now gives helper-heavy runtimes a longer bounded drain window before
+reporting stuck detached host threads. The staged Rust and Erlang version/codegen
+smokes now pass without `SAFETY-VALVE` diagnostics.
 
 ## Current ABI shape
 

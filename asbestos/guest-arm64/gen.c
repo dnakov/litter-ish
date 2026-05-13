@@ -570,6 +570,8 @@ extern void gadget_fcmeq_scalar_zero(void); // FCMEQ Sd/Dd, Sn/Dn, #0.0 (FP scal
 extern void gadget_fcmle_scalar_zero(void); // FCMLE Sd/Dd, Sn/Dn, #0.0 (FP scalar compare <= 0)
 extern void gadget_fcmlt_scalar_zero(void); // FCMLT Sd/Dd, Sn/Dn, #0.0 (FP scalar compare < 0)
 extern void gadget_fp_dp1(void);           // FP single-source: FABS/FNEG/FSQRT/FRINT*/FCVT
+extern void gadget_fcvt_h_to_s_scalar(void); // FCVT Sd, Hn
+extern void gadget_fcvt_h_to_d_scalar(void); // FCVT Dd, Hn
 extern void gadget_fccmp_scalar(void);     // FCCMP/FCCMPE (conditional FP compare)
 extern void gadget_fcsel_scalar(void);     // FCSEL (conditional FP select)
 extern void gadget_fmadd_scalar(void);     // FMADD Fd, Fn, Fm, Fa
@@ -703,6 +705,8 @@ extern void gadget_rbit(void);
 #define SYSREG_ID_ID_AA64ZFR0_EL1 11
 #define SYSREG_ID_CNTVCT_EL0    12  // Virtual counter timer
 #define SYSREG_ID_CNTFRQ_EL0    13  // Counter frequency
+#define SYSREG_ID_MIDR_EL1      14  // Main ID Register
+#define SYSREG_ID_ZERO          15  // Known-readable feature/debug ID register with no advertised features
 
 // Memory gadgets
 extern void gadget_load64(void);
@@ -1890,8 +1894,13 @@ static int gen_branch(struct gen_state *state, uint32_t insn) {
 
             int sysreg_id = -1;
 
+            // MIDR_EL1: op0=3, op1=0, CRn=0, CRm=0, op2=0
+            // User runtimes such as Zig probe this in CPU model detection paths.
+            if (op0 == 3 && op1 == 0 && CRn == 0 && CRm == 0 && op2 == 0) {
+                sysreg_id = SYSREG_ID_MIDR_EL1;
+            }
             // CTR_EL0: op0=3, op1=3, CRn=0, CRm=0, op2=1 (insn & 0xffffffe0 == 0xd53b00e0)
-            if (op0 == 3 && op1 == 3 && CRn == 0 && CRm == 0 && op2 == 1) {
+            else if (op0 == 3 && op1 == 3 && CRn == 0 && CRm == 0 && op2 == 1) {
                 sysreg_id = SYSREG_ID_CTR_EL0;
             }
             // DCZID_EL0: op0=3, op1=3, CRn=0, CRm=0, op2=7 (insn & 0xffffffe0 == 0xd53b00e0)
@@ -1914,6 +1923,11 @@ static int gen_branch(struct gen_state *state, uint32_t insn) {
             else if (op0 == 3 && op1 == 3 && CRn == 2 && CRm == 4 && op2 == 1) {
                 sysreg_id = SYSREG_ID_RNDRRS;
             }
+            // ID_AA64DFR0/DFR1_EL1: op0=3, op1=0, CRn=0, CRm=5, op2=0/1
+            // User runtimes probe these for CPU feature models; report no optional debug features.
+            else if (op0 == 3 && op1 == 0 && CRn == 0 && CRm == 5 && op2 <= 1) {
+                sysreg_id = SYSREG_ID_ZERO;
+            }
             // ID_AA64PFR0_EL1: op0=3, op1=0, CRn=0, CRm=4, op2=0
             else if (op0 == 3 && op1 == 0 && CRn == 0 && CRm == 4 && op2 == 0) {
                 sysreg_id = SYSREG_ID_ID_AA64PFR0_EL1;
@@ -1933,6 +1947,11 @@ static int gen_branch(struct gen_state *state, uint32_t insn) {
             // ID_AA64ISAR1_EL1: op0=3, op1=0, CRn=0, CRm=6, op2=1
             else if (op0 == 3 && op1 == 0 && CRn == 0 && CRm == 6 && op2 == 1) {
                 sysreg_id = SYSREG_ID_ID_AA64ISAR1_EL1;
+            }
+            // ID_AA64MMFR0..3_EL1: op0=3, op1=0, CRn=0, CRm=7, op2=0..3
+            // Report no optional memory-model extensions beyond the base ABI.
+            else if (op0 == 3 && op1 == 0 && CRn == 0 && CRm == 7 && op2 <= 3) {
+                sysreg_id = SYSREG_ID_ZERO;
             }
             // CNTVCT_EL0: op0=3, op1=3, CRn=14, CRm=0, op2=2
             else if (op0 == 3 && op1 == 3 && CRn == 14 && CRm == 0 && op2 == 2) {
@@ -5557,12 +5576,24 @@ skip_three_different:
         uint32_t rd = insn & 0x1f;
 
         // Validate: ftype 0=single, 1=double; opcode must be valid
-        // We handle all common dp1 ops via a generic gadget that re-executes
-        // the instruction natively on the host (with emulated FP reg operands)
+        // We handle all common single/double dp1 ops via a generic gadget that
+        // re-executes the instruction natively on the host (with emulated FP
+        // reg operands). Zig probes scalar FP16 conversion through FCVT Sd,Hn,
+        // so keep that one half-precision form explicit.
         if (ftype <= 1 && opcode <= 15) {
             gen(state, (unsigned long) gadget_fp_dp1);
             // Pack: rd | rn<<8 | ftype<<16 | opcode<<20
             gen(state, rd | (rn << 8) | (ftype << 16) | (opcode << 20));
+            return 1;
+        }
+        if (ftype == 3 && opcode == 4) {
+            gen(state, (unsigned long) gadget_fcvt_h_to_s_scalar);
+            gen(state, rd | (rn << 8));
+            return 1;
+        }
+        if (ftype == 3 && opcode == 5) {
+            gen(state, (unsigned long) gadget_fcvt_h_to_d_scalar);
+            gen(state, rd | (rn << 8));
             return 1;
         }
     }

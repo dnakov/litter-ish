@@ -1,16 +1,16 @@
 # ARM64 smoke issues and syscall coverage appraisal
 
-Updated: 2026-05-10
+Updated: 2026-05-13
 
 ## Executive status
 
 The current ARM64 Linux-host fakefs is in a good core-runtime state:
 
-- Staged runtime coverage: **28 / 28 passing**.
+- Staged runtime coverage: **44 / 44 passing**.
 - Benchmarks Game core tier: **9 official language rows × 10 benchmarks = 90 / 90 runs passing**.
 - Java-equivalent probe: **10 / 10 passing** in HotSpot default mixed mode; interpreter fallback mode also passes.
 - Native compiler rows additionally build inside the guest: **GCC 10 / 10 builds**, **G++ 10 / 10 builds**.
-- The rows now include interpreted runtimes, managed runtimes, native compilers, big integers, regex engines, pipes/stdin/stdout, `fork()`, guest pthreads, futex-heavy language runtimes, and SysV shared-memory/message-queue IPC.
+- The rows now include interpreted runtimes, managed runtimes, native compilers, big integers, regex engines, pipes/stdin/stdout, `fork()`, guest pthreads, futex-heavy language runtimes, SysV shared-memory/message-queue IPC, and staged Python/Lua/Java/Clojure/PyPy/Swift/Rust/Erlang/Zig smoke or availability coverage.
 
 ## Issues found by smoke workloads
 
@@ -145,7 +145,7 @@ Noisy ARM64 fault diagnostics (`page fault ...`, register dumps, block instructi
 
 ARM64 iSH now keeps guest barrier classes distinct at translation time: `DMB` emits a host `dmb`, `DSB` emits a host `dsb`, and `ISB` emits a host `isb`. Because the current decoder folds all CRm shareability/domain variants into one gadget per barrier class, the `DMB` and `DSB` gadgets use the strongest host `sy` domain so guest `SY`/`LD`/`ST` forms are not under-serialized.
 
-The staged runtime suite includes `arm64 barriers DMB/DSB/ISB`, which compiles and executes common barrier encodings (`dmb sy`, `dmb ish`, `dmb ishld`, `dmb ishst`, `dsb sy`, `dsb ish`, and `isb`) inside the guest. Latest staged coverage is `/workspace/tmp/ish-arm64-runtime-coverage-20260512-181051.md` with **28 / 28 passing**.
+The staged runtime suite includes `arm64 barriers DMB/DSB/ISB`, which compiles and executes common barrier encodings (`dmb sy`, `dmb ish`, `dmb ishld`, `dmb ishst`, `dsb sy`, `dsb ish`, and `isb`) inside the guest. Latest staged coverage is `/workspace/tmp/ish-arm64-runtime-coverage-20260513-072738.md` with **44 / 44 passing**.
 
 ## 2026-05-12 production audit hardening
 
@@ -159,3 +159,16 @@ The post-production code-smell/logic audit fixed several low-risk but concrete r
 - `tools/ptraceomatic.c` now constructs `TERM=...` directly instead of reading memory before the pointer returned by `getenv("TERM")`.
 
 Validation after these changes: `make build-arm64-linux-all`, staged runtime coverage **28 / 28 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260512-181051.md`), and default mixed-mode Java Hello (`/workspace/tmp/java-hello-audit-r5-20260512.log`, `javac_rc:0`, `java_rc:0`).
+
+## 2026-05-13 runtime coverage expansion and cleanup fixes
+
+The staged runtime suite now includes additional language/toolchain smoke or availability coverage and validates **44 / 44 passing** in `/workspace/tmp/ish-arm64-runtime-coverage-20260513-072738.md`:
+
+- Python/Lua: version and eval smoke.
+- Java/Clojure: default mixed-mode `javac`/`java`, Java interpreter fallback, and `clojure.main` eval smoke.
+- PyPy/Swift: Alpine aarch64 availability probes record that neither toolchain is packaged in the current index.
+- Rust: `rustc --version`, direct compile/run, and `rustc --test` unit-test execution, now without exit safety-valve leaks.
+- Erlang: BEAM startup/version via `erl -version`, now without exit safety-valve leaks; fuller `erl -noshell`/`erlc` module execution remains a follow-up lane.
+- Zig: `zig version`, `zig build-obj`, and linked object execution through a C harness. During this audit, Zig also exposed missing scalar FP16-to-FP64 conversion (`FCVT Dd,Hn`, instruction `0x1ee2c001`); the ARM64 generator now handles it alongside `FCVT Sd,Hn`. `zig test` remains outside the default gate pending Alpine Zig 0.15.2 compiler-rt `f16` comptime behavior.
+
+This pass also fixed robustness issues exposed by the broader toolchain set: path normalization now bounds at-path and symlink expansion copies, blocking realfs/socket read paths surface guest signals instead of retrying all host `EINTR`s, and `exit_group` waits long enough for helper threads to observe shutdown cleanly.
