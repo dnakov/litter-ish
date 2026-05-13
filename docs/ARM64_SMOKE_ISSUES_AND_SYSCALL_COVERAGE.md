@@ -61,7 +61,7 @@ The implemented set is now strong for the workloads currently passing:
 - memory: `mmap`, high ARM64 mmap hints, `munmap`, `mprotect`, `mremap`, `madvise`, `mincore`, `mlock`, `msync`, lazy `MAP_NORESERVE` reservations;
 - synchronization: futex wait/wake/requeue/wake-op, robust lists, nanosleep/timers;
 - filesystems: `openat`, `read`/`write`, `readv`/`writev`, `pread`/`pwrite`, `preadv`/`pwritev`, `getdents64`, `statx`, `fstatat`, `copy_file_range`, `sendfile`, `splice`, chmod/chown/link/symlink/rename/unlink/mkdir, `statfs`/`fstatfs`;
-- sockets: core TCP/UDP/Unix socket paths, UDP `sendto`/`recvfrom`, `getsockname`, socket options, `socketpair`, `accept4`, `sendmsg`/`recvmsg`, `sendmmsg`/`recvmmsg`, fd passing;
+- sockets: core TCP/UDP/Unix socket paths, UDP `sendto`/`recvfrom`, TCP `listen`/`accept`, `getsockname`, socket options, `socketpair`, `accept4`, `sendmsg`/`recvmsg`, `sendmmsg`/`recvmmsg`, fd passing;
 - IPC: SysV shared memory, SysV semaphores, SysV message queues, POSIX message queues, eventfd, epoll, timerfd, inotify;
 - runtime probes: `rseq`, `memfd_create`, `openat2`, `faccessat2`, `preadv2`, `pwritev2`, `process_vm_readv`, `process_vm_writev`, and quiet fallback stubs for remaining modern optional probes.
 
@@ -101,7 +101,7 @@ Implemented and validated in `/workspace/tmp/ish-arm64-runtime-coverage-20260505
 - `preadv2` / `pwritev2` with `flags == 0`
 - `process_vm_readv` / `process_vm_writev`
 
-The staged runtime suite now has a dedicated C fixture named `high-value syscall gaps` that compiles and executes these paths inside the guest, plus UDP loopback and socket option length/buffer checks.
+The staged runtime suite now has a dedicated C fixture named `high-value syscall gaps` that compiles and executes these paths inside the guest, plus UDP loopback, TCP accept, and socket option length/buffer checks.
 
 ## 2026-05-04 OpenJDK DC ZVA closure
 
@@ -145,7 +145,7 @@ Noisy ARM64 fault diagnostics (`page fault ...`, register dumps, block instructi
 
 ARM64 iSH now keeps guest barrier classes distinct at translation time: `DMB` emits a host `dmb`, `DSB` emits a host `dsb`, and `ISB` emits a host `isb`. Because the current decoder folds all CRm shareability/domain variants into one gadget per barrier class, the `DMB` and `DSB` gadgets use the strongest host `sy` domain so guest `SY`/`LD`/`ST` forms are not under-serialized.
 
-The staged runtime suite includes `arm64 barriers DMB/DSB/ISB`, which compiles and executes common barrier encodings (`dmb sy`, `dmb ish`, `dmb ishld`, `dmb ishst`, `dsb sy`, `dsb ish`, and `isb`) inside the guest. Latest staged coverage is `/workspace/tmp/ish-arm64-runtime-coverage-20260513-203532.md` with **49 / 49 passing**.
+The staged runtime suite includes `arm64 barriers DMB/DSB/ISB`, which compiles and executes common barrier encodings (`dmb sy`, `dmb ish`, `dmb ishld`, `dmb ishst`, `dsb sy`, `dsb ish`, and `isb`) inside the guest. Latest staged coverage is `/workspace/tmp/ish-arm64-runtime-coverage-20260513-210655.md` with **49 / 49 passing**.
 
 ## 2026-05-12 production audit hardening
 
@@ -162,7 +162,7 @@ Validation after these changes: `make build-arm64-linux-all`, staged runtime cov
 
 ## 2026-05-13 runtime coverage expansion and cleanup fixes
 
-The staged runtime suite now includes additional language/toolchain smoke or availability coverage and validates **49 / 49 passing** in `/workspace/tmp/ish-arm64-runtime-coverage-20260513-203532.md`:
+The staged runtime suite now includes additional language/toolchain smoke or availability coverage and validates **49 / 49 passing** in `/workspace/tmp/ish-arm64-runtime-coverage-20260513-210655.md`:
 
 - Python/Lua: version and eval smoke.
 - Java/Clojure: default mixed-mode `javac`/`java`, Java interpreter fallback, and `clojure.main` eval smoke.
@@ -171,4 +171,4 @@ The staged runtime suite now includes additional language/toolchain smoke or ava
 - Erlang: BEAM startup/version via `erl -version`, now without exit safety-valve leaks; fuller `erl -noshell`/`erlc` module execution remains a follow-up lane.
 - Zig: `zig version`, `zig build-obj`, and linked object execution through a C harness. During this audit, Zig also exposed missing scalar FP16-to-FP64 conversion (`FCVT Dd,Hn`, instruction `0x1ee2c001`); the ARM64 generator now handles it alongside `FCVT Sd,Hn`. `zig test` remains outside the default gate pending Alpine Zig 0.15.2 compiler-rt `f16` comptime behavior.
 
-This pass also fixed robustness issues exposed by the broader toolchain set: path normalization now bounds at-path and symlink expansion copies, stale path-normalization caching was removed so rapid symlink retargeting cannot resolve to an old target, normal blocking `recvfrom`/`recvmsg` paths no longer print stale `NETDIAG` debug lines in clean workload logs, socket receive paths now copy only the actual byte count and validate sockaddr lengths, `setsockopt`/`getsockopt` avoid guest-sized VLAs and respect returned lengths, Unix socket backing paths are bounded, failed Unix `bind()` cleanup clears released name references, blocking realfs/socket read paths surface guest signals instead of retrying all host `EINTR`s, and `exit_group` waits long enough for helper threads to observe shutdown cleanly.
+This pass also fixed robustness issues exposed by the broader toolchain set: path normalization now bounds at-path and symlink expansion copies, stale path-normalization caching was removed so rapid symlink retargeting cannot resolve to an old target, normal blocking `recvfrom`/`recvmsg` paths no longer print stale `NETDIAG` debug lines in clean workload logs, socket receive and accept/name paths now copy only bounded byte counts and validate sockaddr lengths, `setsockopt`/`getsockopt` avoid guest-sized VLAs and respect returned lengths, Unix socket backing paths are bounded, failed Unix `bind()` cleanup clears released name references, blocking realfs/socket read paths surface guest signals instead of retrying all host `EINTR`s, and `exit_group` waits long enough for helper threads to observe shutdown cleanly.

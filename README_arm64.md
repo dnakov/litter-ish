@@ -282,7 +282,7 @@ The coverage script currently exercises, in order:
 1. base shell/apk/tmp file I/O sanity checks;
 2. a C toolchain smoke test (`gcc --version`, compile, execute);
 3. SysV shared-memory/message-queue IPC across `fork()`;
-4. high-value syscall gap and socket ABI coverage (`signalfd4`, SysV semaphores, POSIX mqueues, `memfd_create`, `openat2`, `faccessat2`, `preadv2`, `pwritev2`, `process_vm_*`, UDP `sendto`/`recvfrom`, `getsockname`, `setsockopt`, `getsockopt`);
+4. high-value syscall gap and socket ABI coverage (`signalfd4`, SysV semaphores, POSIX mqueues, `memfd_create`, `openat2`, `faccessat2`, `preadv2`, `pwritev2`, `process_vm_*`, UDP `sendto`/`recvfrom`, TCP `listen`/`accept`, `getsockname`, `setsockopt`, `getsockopt`);
 5. ARM64 `DCZID_EL0` / `dc zva` sysreg and instruction coverage;
 6. ARM64 signal `ucontext_t` layout and null-SIGSEGV delivery coverage;
 7. ARM64 `CCMP`/`CCMN` condition-code-15 (`NV`) coverage;
@@ -306,7 +306,7 @@ to debug, not as cases to skip.
 
 Current Linux-host status from this pass:
 
-- Latest staged run: **49 / 49 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260513-203532.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`).
+- Latest staged run: **49 / 49 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260513-210655.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`).
 - Production package baseline: [docs/ARM64_PRODUCTION_BASELINE.md](docs/ARM64_PRODUCTION_BASELINE.md) (`alpine-arm64-fakefs` on Alpine 3.23.4 with OpenJDK 21.0.10_p7-r0; current audit tag `arm64-openjdk21-prod-20260510-r5`).
 - Non-trivial workload probes are grouped in [docs/ARM64_WORKLOAD_SMOKE_TESTS.md](docs/ARM64_WORKLOAD_SMOKE_TESTS.md): Bun/PiClaw, `rcarmo/go-gte`, and the Benchmarks Game rows.
 - C coverage is green: `gcc --version`, compile, and execute all pass.

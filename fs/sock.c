@@ -417,18 +417,22 @@ int_t sys_accept(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr) {
     if (sock == NULL)
         return _EBADF;
     dword_t sockaddr_len = 0;
+    dword_t sockaddr_buffer_len = 0;
     if (sockaddr_addr != 0) {
-        if (user_get(sockaddr_len_addr, sockaddr_len))
+        if (sockaddr_len_addr == 0 || user_get(sockaddr_len_addr, sockaddr_len))
             return _EFAULT;
+        if (sockaddr_len > sizeof(struct sockaddr_max_))
+            sockaddr_len = sizeof(struct sockaddr_max_);
+        sockaddr_buffer_len = sockaddr_len;
     }
 
-    char sockaddr[sockaddr_len];
+    struct sockaddr_max_ sockaddr;
     int client;
     do {
         sockrestart_begin_listen_wait(sock);
         errno = 0;
         client = accept(sock->real_fd,
-                sockaddr_addr != 0 ? (void *) sockaddr : NULL,
+                sockaddr_addr != 0 ? (void *) &sockaddr : NULL,
                 sockaddr_addr != 0 ? &sockaddr_len : NULL);
         sockrestart_end_listen_wait(sock);
     } while (sockrestart_should_restart_listen_wait() && errno == EINTR);
@@ -436,17 +440,23 @@ int_t sys_accept(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr) {
         return errno_map();
 
     if (sockaddr_addr != 0) {
-        int err = sockaddr_write(sockaddr_addr, sockaddr, sizeof(sockaddr), &sockaddr_len);
-        if (err < 0)
-            return client;
-        if (user_put(sockaddr_len_addr, sockaddr_len))
+        int err = sockaddr_write(sockaddr_addr, &sockaddr, sockaddr_buffer_len, &sockaddr_len);
+        if (err < 0) {
+            close(client);
+            return err;
+        }
+        if (user_put(sockaddr_len_addr, sockaddr_len)) {
+            close(client);
             return _EFAULT;
+        }
     }
 
     fd_t client_f = sock_fd_create(client,
             sock->socket.domain, sock->socket.type, sock->socket.protocol);
-    if (client_f < 0)
+    if (client_f < 0) {
         close(client);
+        return client_f;
+    }
 
     if (sock->socket.domain == AF_LOCAL_) {
         lock(&peer_lock);
@@ -485,17 +495,26 @@ int_t sys_accept4(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr, 
     return client_f;
 }
 
-static void copy_unix_name(char *sockaddr, dword_t *sockaddr_len, struct fd *sock) {
+static int copy_unix_name(struct sockaddr_max_ *sockaddr, dword_t buffer_len, dword_t *sockaddr_len, struct fd *sock) {
     struct sockaddr_ *fake_addr = (void *) sockaddr;
-    fake_addr->family = PF_LOCAL_;
+    size_t name_len_full = sock->socket.unix_name_len;
+    if (name_len_full > sizeof(sockaddr->data))
+        name_len_full = sizeof(sockaddr->data);
+    size_t full_len = offsetof(struct sockaddr_, data) + name_len_full;
+    *sockaddr_len = full_len;
+    if (buffer_len > sizeof(*sockaddr))
+        buffer_len = sizeof(*sockaddr);
+    if (buffer_len < offsetof(struct sockaddr_, data))
+        return 0;
 
-    size_t data_len = *sockaddr_len - offsetof(struct sockaddr_, data);
-    size_t name_len = sock->socket.unix_name_len;
+    fake_addr->family = PF_LOCAL_;
+    size_t data_len = buffer_len - offsetof(struct sockaddr_, data);
+    size_t name_len = name_len_full;
     if (name_len > data_len)
         name_len = data_len;
     memset(fake_addr->data, 0, data_len);
     memcpy(fake_addr->data, sock->socket.unix_name, name_len);
-    *sockaddr_len = offsetof(struct sockaddr_, data) + name_len;
+    return 0;
 }
 
 int_t sys_getsockname(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_addr) {
@@ -506,23 +525,29 @@ int_t sys_getsockname(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_ad
     dword_t sockaddr_len;
     if (user_get(sockaddr_len_addr, sockaddr_len))
         return _EFAULT;
-    char sockaddr[sockaddr_len];
+    dword_t sockaddr_buffer_len = sockaddr_len;
+    if (sockaddr_len > sizeof(struct sockaddr_max_))
+        sockaddr_len = sizeof(struct sockaddr_max_);
+    struct sockaddr_max_ sockaddr;
 
     // if this is a unix socket, return the same string passed to bind
     if (sock->socket.domain == PF_LOCAL_) {
-        copy_unix_name(sockaddr, &sockaddr_len, sock);
-        if (user_write(sockaddr_addr, sockaddr, sizeof(sockaddr)))
+        int err = copy_unix_name(&sockaddr, sockaddr_buffer_len, &sockaddr_len, sock);
+        if (err < 0)
+            return err;
+        size_t write_len = sockaddr_buffer_len < sockaddr_len ? sockaddr_buffer_len : sockaddr_len;
+        if (write_len != 0 && user_write(sockaddr_addr, &sockaddr, write_len))
             return _EFAULT;
         if (user_put(sockaddr_len_addr, sockaddr_len))
             return _EFAULT;
         return 0;
     }
 
-    int res = getsockname(sock->real_fd, (void *) sockaddr, &sockaddr_len);
+    int res = getsockname(sock->real_fd, (void *) &sockaddr, &sockaddr_len);
     if (res < 0)
         return errno_map();
 
-    int err = sockaddr_write(sockaddr_addr, sockaddr, sizeof(sockaddr), &sockaddr_len);
+    int err = sockaddr_write(sockaddr_addr, &sockaddr, sockaddr_buffer_len, &sockaddr_len);
     if (err < 0)
         return err;
     if (user_put(sockaddr_len_addr, sockaddr_len))
@@ -538,16 +563,19 @@ int_t sys_getpeername(fd_t sock_fd, addr_t sockaddr_addr, addr_t sockaddr_len_ad
     dword_t sockaddr_len;
     if (user_get(sockaddr_len_addr, sockaddr_len))
         return _EFAULT;
+    dword_t sockaddr_buffer_len = sockaddr_len;
+    if (sockaddr_len > sizeof(struct sockaddr_max_))
+        sockaddr_len = sizeof(struct sockaddr_max_);
 
     // TODO if this is a unix socket, return the same string the peer passed to
     // bind once the peer pointer is available
 
-    char sockaddr[sockaddr_len];
-    int res = getpeername(sock->real_fd, (void *) sockaddr, &sockaddr_len);
+    struct sockaddr_max_ sockaddr;
+    int res = getpeername(sock->real_fd, (void *) &sockaddr, &sockaddr_len);
     if (res < 0)
         return errno_map();
 
-    int err = sockaddr_write(sockaddr_addr, sockaddr, sizeof(sockaddr), &sockaddr_len);
+    int err = sockaddr_write(sockaddr_addr, &sockaddr, sockaddr_buffer_len, &sockaddr_len);
     if (err < 0)
         return err;
     if (user_put(sockaddr_len_addr, sockaddr_len))
@@ -1006,9 +1034,10 @@ int_t sys_getsockopt(fd_t sock_fd, dword_t level, dword_t option, addr_t value_a
             // https://lkml.org/lkml/2017/4/24/923
             .total_retrans = conn_info.tcpi_txretransmitpackets,
         };
-        if (value_len > sizeof(struct tcp_info_))
-            value_len = sizeof(struct tcp_info_);
-        memcpy(value, &info, value_len);
+        value_len = sizeof(struct tcp_info_);
+        size_t copy_len = buffer_len < value_len ? buffer_len : value_len;
+        if (copy_len != 0)
+            memcpy(value, &info, copy_len);
 #endif
     } else {
         int real_opt = sock_opt_to_real(option, level);
