@@ -6,7 +6,7 @@
 #include "util/sync.h"
 
 #define FIBER_INITIAL_HASH_SIZE (1 << 10)
-#define FIBER_CACHE_SIZE (1 << 10)
+#define FIBER_CACHE_SIZE (1 << 12)  // 4096 entries
 #define FIBER_PAGE_HASH_SIZE (1 << 10)
 
 struct asbestos {
@@ -26,6 +26,25 @@ struct asbestos {
     struct {
         struct list blocks[2];
     } *page_hash;
+
+    // Incremented on every block invalidation; used to invalidate persistent
+    // per-thread block caches (which may hold pointers to jetsam'd blocks).
+    // Atomic because readers check it without asbestos->lock in the hot JIT path.
+    _Atomic unsigned invalidate_gen;
+
+    // Number of threads currently inside cpu_run_to_interrupt.
+    // When 1, we can skip jetsam_lock (no other thread to synchronize with).
+    unsigned active_threads;
+
+    // === RCU-like Optimization ===
+    // Atomic counter: number of threads currently executing JIT code.
+    // Jetsam cleanup waits until this reaches 0 before freeing blocks.
+    // This avoids read lock overhead on every JIT enter/exit.
+    _Atomic unsigned jit_active_threads;
+
+    // Generation number for jetsam cleanup. Incremented when jetsam list
+    // becomes non-empty. Threads check this to know when cleanup is needed.
+    _Atomic unsigned jetsam_gen;
 
     lock_t lock;
     wrlock_t jetsam_lock;
@@ -59,6 +78,15 @@ struct fiber_block {
 
     unsigned long code[];
 };
+
+// High-bit tracing: detect emulation bugs that leave bits 32+ dirty in guest regs
+extern volatile bool g_trace_highbits;
+
+// Optional per-guest-PC trace hooks (used for targeted replay debugging).
+extern volatile bool g_trace_guest_pc;
+void asbestos_set_trace_pcs(const char *spec);
+void asbestos_set_trace_gate(const char *pc_spec, const char *x4_spec, const char *budget_spec);
+bool asbestos_should_trace_guest_pc(addr_t pc);
 
 // Create a new asbestos
 struct asbestos *asbestos_new(struct mmu *mmu);

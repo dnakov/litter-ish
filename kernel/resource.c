@@ -1,17 +1,7 @@
-#if __linux__
-// pull in RUSAGE_THREAD
-#define _GNU_SOURCE
-#include <sys/resource.h>
-#elif __APPLE__
-// pull in thread_info and friends
-#include <mach/mach.h>
-#else
-#error
-#endif
-
 #include <limits.h>
 #include <string.h>
 #include "kernel/calls.h"
+#include "platform/platform.h"
 
 static bool resource_valid(int resource) {
     return resource >= 0 && resource < RLIMIT_NLIMITS_;
@@ -108,6 +98,30 @@ dword_t sys_setrlimit32(dword_t resource, addr_t rlim_addr) {
     return rlimit_set(current, resource, rlimit);
 }
 
+// 64-bit getrlimit/setrlimit for ARM64 (struct rlimit with 64-bit cur/max)
+dword_t sys_getrlimit64(dword_t resource, addr_t rlim_addr) {
+    STRACE("getrlimit64(%d)", resource);
+    struct rlimit_ rlimit;
+    int err = rlimit_get(current, resource, &rlimit);
+    if (err < 0)
+        return err;
+    STRACE(" {cur=%#llx, max=%#llx}", (unsigned long long)rlimit.cur, (unsigned long long)rlimit.max);
+    if (user_put(rlim_addr, rlimit))
+        return _EFAULT;
+    return 0;
+}
+
+dword_t sys_setrlimit64(dword_t resource, addr_t rlim_addr) {
+    struct rlimit_ rlimit;
+    if (user_get(rlim_addr, rlimit))
+        return _EFAULT;
+    STRACE("setrlimit64(%d, {cur=%#llx, max=%#llx})", resource, (unsigned long long)rlimit.cur, (unsigned long long)rlimit.max);
+    int err = check_setrlimit(resource, rlimit);
+    if (err < 0)
+        return err;
+    return rlimit_set(current, resource, rlimit);
+}
+
 dword_t sys_prlimit64(pid_t_ pid, dword_t resource, addr_t new_limit_addr, addr_t old_limit_addr) {
     STRACE("prlimit64(%d, %d)", pid, resource);
     if (pid != 0)
@@ -138,25 +152,13 @@ dword_t sys_prlimit64(pid_t_ pid, dword_t resource, addr_t new_limit_addr, addr_
 
 struct rusage_ rusage_get_current() {
     // only the time fields are currently implemented
-    struct rusage_ rusage;
-#if __linux__
-    struct rusage usage;
-    int err = getrusage(RUSAGE_THREAD, &usage);
-    assert(err == 0);
-    rusage.utime.sec = usage.ru_utime.tv_sec;
-    rusage.utime.usec = usage.ru_utime.tv_usec;
-    rusage.stime.sec = usage.ru_stime.tv_sec;
-    rusage.stime.usec = usage.ru_stime.tv_usec;
-#elif __APPLE__
-    thread_basic_info_data_t info;
-    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
-    thread_info(mach_thread_self(), THREAD_BASIC_INFO, (thread_info_t) &info, &count);
-    rusage.utime.sec = info.user_time.seconds;
-    rusage.utime.usec = info.user_time.microseconds;
-    rusage.stime.sec = info.system_time.seconds;
-    rusage.stime.usec = info.system_time.microseconds;
-#endif
-    return rusage;
+    struct platform_thread_cpu_usage usage = platform_get_thread_cpu_usage();
+    return (struct rusage_) {
+        .utime.sec = usage.user_sec,
+        .utime.usec = usage.user_usec,
+        .stime.sec = usage.system_sec,
+        .stime.usec = usage.system_usec,
+    };
 }
 
 static void timeval_add(struct timeval_ *dst, struct timeval_ *src) {
@@ -202,8 +204,8 @@ int_t sys_sched_getaffinity(pid_t_ pid, dword_t cpusetsize, addr_t cpuset_addr) 
             return _ESRCH;
     }
 
-    unsigned cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    char cpuset[cpus / 8 + 1];
+    unsigned cpus = PLATFORM_GUEST_CPU_COUNT;
+    char cpuset[(PLATFORM_GUEST_CPU_COUNT + 7) / 8];
     if (cpusetsize < sizeof(cpuset))
         return _EINVAL;
     memset(cpuset, 0, sizeof(cpuset));
@@ -216,6 +218,17 @@ int_t sys_sched_getaffinity(pid_t_ pid, dword_t cpusetsize, addr_t cpuset_addr) 
 }
 int_t sys_sched_setaffinity(pid_t_ UNUSED(pid), dword_t UNUSED(cpusetsize), addr_t UNUSED(cpuset_addr)) {
     // meh
+    return 0;
+}
+
+int_t sys_getcpu(addr_t cpu_addr, addr_t node_addr, addr_t UNUSED(tcache_addr)) {
+    STRACE("getcpu(%#llx, %#llx)", (unsigned long long)cpu_addr, (unsigned long long)node_addr);
+    dword_t cpu = 0;
+    dword_t node = 0;
+    if (cpu_addr && user_put(cpu_addr, cpu))
+        return _EFAULT;
+    if (node_addr && user_put(node_addr, node))
+        return _EFAULT;
     return 0;
 }
 

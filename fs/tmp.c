@@ -241,7 +241,7 @@ static void tmpfs_unmount_tree(struct tmp_inode *tree) {
 #endif
 
 static int tmpfs_umount(struct mount *UNUSED(mount)) {
-    // big fat fuckin TODO
+    // TODO: free the tmpfs inode tree when unmounting.
     // struct tmp_inode *root = mount->data;
     // tmpfs_unmount_tree(root);
     TODO("tmpfs umount");
@@ -463,6 +463,7 @@ static int tmpfs_readdir(struct fd *fd, struct dir_entry *entry) {
     tmpfs_fd_seekdir(fd, next_dirent);
 
     entry->inode = dirent->inode->stat.inode;
+    entry->type = dirent_type_from_mode(dirent->inode->stat.mode);
     strcpy(entry->name, dirent->name);
     res = 1;
 

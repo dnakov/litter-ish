@@ -66,7 +66,9 @@ extern "C" fn sigchld_handler(_: libc::c_int) {
 fn run() -> io::Result<()> {
     // Send the readiness handshake before doing anything else; the host's
     // reader thread is already blocked on it.
-    write_frame(&SupervisorToHost::Ready { protocol_version: PROTOCOL_VERSION })?;
+    write_frame(&SupervisorToHost::Ready {
+        protocol_version: PROTOCOL_VERSION,
+    })?;
 
     // SIGCHLD self-pipe (signalfd isn't implemented by iSH).
     let mut sig_pipe = [-1i32; 2];
@@ -125,8 +127,10 @@ fn run() -> io::Result<()> {
 
         let timeout = if shutdown_requested && sessions.is_empty() {
             0 // drain mode complete
-        } else {
+        } else if sessions.is_empty() {
             -1
+        } else {
+            50
         };
         let n = unsafe { libc::poll(pollfds.as_mut_ptr(), pollfds.len() as _, timeout) };
         if n < 0 {
@@ -160,12 +164,10 @@ fn run() -> io::Result<()> {
             reap_children(&mut sessions)?;
         }
 
-        // 3) Drain session outputs.
-        for (idx, &id) in session_ids.iter().enumerate() {
-            let pfd = &pollfds[2 + idx];
-            if pfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) == 0 {
-                continue;
-            }
+        // 3) Drain session outputs. Poll readiness is not reliable for every
+        //    iSH pipe path, so live sessions use a short timeout and a
+        //    nonblocking drain pass even when revents is empty.
+        for &id in &session_ids {
             drain_session_output(&mut sessions, id)?;
         }
 
@@ -219,7 +221,7 @@ fn drain_stdin(buf: &mut Vec<u8>) -> io::Result<()> {
         };
         match n {
             n if n > 0 => buf.extend_from_slice(&tmp[..n as usize]),
-            0          => return Ok(()), // EOF — caller picks up POLLHUP
+            0 => return Ok(()), // EOF — caller picks up POLLHUP
             n if n < 0 => {
                 let err = io::Error::last_os_error();
                 if err.kind() == io::ErrorKind::WouldBlock {
@@ -276,7 +278,10 @@ fn handle_request(
                 return Ok(());
             }
             match spawn::spawn(reqid, opts) {
-                Ok(spawn::OpenedSession { session, spawn_error }) => {
+                Ok(spawn::OpenedSession {
+                    session,
+                    spawn_error,
+                }) => {
                     let pid = session.pid;
                     if let Some(err_msg) = spawn_error {
                         // Child failed before exec. Report and don't keep
@@ -388,10 +393,7 @@ fn reap_children(sessions: &mut HashMap<u32, Session>) -> io::Result<()> {
     }
 }
 
-fn drain_session_output(
-    sessions: &mut HashMap<u32, Session>,
-    reqid: u32,
-) -> io::Result<()> {
+fn drain_session_output(sessions: &mut HashMap<u32, Session>, reqid: u32) -> io::Result<()> {
     // Take the session out so we can call write_frame (which borrows
     // global stdout) without overlapping mutable borrows.
     let Some(s) = sessions.get_mut(&reqid) else {
@@ -456,7 +458,9 @@ fn finalize_done_sessions(sessions: &mut HashMap<u32, Session>) -> io::Result<()
 
 fn kill_all(sessions: &HashMap<u32, Session>, sig: libc::c_int) {
     for s in sessions.values() {
-        unsafe { libc::kill(-s.pid, sig); }
+        unsafe {
+            libc::kill(-s.pid, sig);
+        }
     }
 }
 
@@ -482,4 +486,3 @@ fn decode_status(status: libc::c_int) -> (i32, i32) {
         (-1, 0)
     }
 }
-

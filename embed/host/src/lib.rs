@@ -26,7 +26,7 @@ pub use session::{
     IshSession, OutputChunk, ReadOutput, SessionEvent, SessionId, Stream, WriteStatus,
 };
 
-/// The PID-1 supervisor binary, statically linked as i386 musl ELF and
+/// The PID-1 supervisor binary, statically linked as AArch64 musl ELF and
 /// embedded into this crate.
 pub static SUPERVISOR_ELF: &[u8] = include_bytes!(env!("ISH_SUPERVISOR_BIN"));
 
@@ -35,11 +35,12 @@ mod build_smoke {
     use super::*;
 
     #[test]
-    fn supervisor_binary_is_an_i386_elf() {
+    fn supervisor_binary_is_an_aarch64_elf() {
         assert!(SUPERVISOR_ELF.len() > 1024);
         assert_eq!(&SUPERVISOR_ELF[..4], b"\x7fELF");
-        assert_eq!(SUPERVISOR_ELF[4], 1);
+        assert_eq!(SUPERVISOR_ELF[4], 2);
         assert_eq!(SUPERVISOR_ELF[5], 1);
-        assert_eq!(SUPERVISOR_ELF[18], 3);
+        assert_eq!(SUPERVISOR_ELF[18], 183);
+        assert_eq!(SUPERVISOR_ELF[19], 0);
     }
 }

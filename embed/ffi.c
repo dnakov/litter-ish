@@ -34,6 +34,18 @@ int ish_ffi_become_init(void) {
     return become_first_process();
 }
 
+int ish_ffi_mount_procfs(void) {
+    if (current == NULL)
+        return -EINVAL;
+    return do_mount(&procfs, "proc", "/proc", "", 0);
+}
+
+int ish_ffi_mount_devpts(void) {
+    if (current == NULL)
+        return -EINVAL;
+    return do_mount(&devptsfs, "devpts", "/dev/pts", "", 0);
+}
+
 int ish_ffi_install_pipe_stdio(int in_rd, int out_wr_a, int out_wr_b) {
     return create_piped_stdio_from_fds(in_rd, out_wr_a, out_wr_b);
 }

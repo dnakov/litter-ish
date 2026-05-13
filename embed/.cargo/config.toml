@@ -1,0 +1,10 @@
+# Workspace-level linker config for the in-guest supervisor target. The
+# supervisor crate also carries this config for direct builds from its own
+# directory; this copy makes `cargo build -p ish-supervisor --target ...`
+# work from the embed workspace root.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = [
+    "-Clink-self-contained=yes",
+    "-Crelocation-model=static",
+]

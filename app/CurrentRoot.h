@@ -23,8 +23,13 @@ void FsUpdateRepositories(void);
 /// - update the default rootfs to the same version
 /// - update gen_apk_repositories.py to generate the new version of /etc/apk/repositories
 /// - set both of the following constants appropriately, making sure to use a larger number than the previous one
-#define CURRENT_APK_VERSION 31900
-#define CURRENT_APK_VERSION_STRING "Alpine v3.19"
+#define CURRENT_APK_VERSION 32100
+#define CURRENT_APK_VERSION_STRING "Alpine v3.21"
+
+/// Apply rootfs patches from RootfsPatch.bundle on boot.
+/// The bundle contains a manifest.plist with a version number and file list.
+/// Files are written to guest fs when the bundle version exceeds /ish/overlay-version.
+void FsApplyOverlay(void);
 
 extern NSString *const FsUpdatedNotification;
 

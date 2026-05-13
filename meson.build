@@ -27,6 +27,7 @@ foreach channel : log_on + log_off
 endforeach
 add_project_arguments('-DLOG_HANDLER_' + get_option('log_handler').to_upper() + '=1', language: 'c')
 add_project_arguments('-DENGINE_' + get_option('engine').to_upper() + '=1', language: 'c')
+add_project_arguments('-DGUEST_ARM64=1', language: 'c')
 
 if get_option('no_crlf')
     add_project_arguments('-DNO_CRLF', language: 'c')
@@ -43,7 +44,8 @@ libdl = cc.find_library('dl', required: false)
 sqlite3 = cc.find_library('sqlite3')
 dependencies = [librt, libm, libdl, threads, sqlite3]
 
-subdir('vdso') # ish depends on the vdso
+subdir('vdso/arm64')
+includes += include_directories('vdso/arm64')
 
 offsets = custom_target('offsets',
     output: 'cpu-offsets.h', input: 'asbestos/offsets.c', depfile: 'cpu-offsets.h.d',
@@ -51,24 +53,21 @@ offsets = custom_target('offsets',
 
 emu_src = [
     'emu/tlb.c',
-    'emu/fpu.c',
-    'emu/vec.c',
-    'emu/mmx.c',
-    'emu/float80.c',
-
+    'emu/arch/arm64/fpu.c',
 ]
-gadgets = 'asbestos/gadgets-' + host_machine.cpu_family()
+
+gadgets = 'asbestos/guest-arm64/gadgets-' + host_machine.cpu_family()
 emu_src += [
     'asbestos/asbestos.c',
-    'asbestos/gen.c',
+    'asbestos/guest-arm64/gen.c',
+    'asbestos/guest-arm64/crypto_helpers.c',
     'asbestos/helpers.c',
     gadgets+'/entry.S',
     gadgets+'/memory.S',
     gadgets+'/control.S',
     gadgets+'/math.S',
     gadgets+'/bits.S',
-    gadgets+'/string.S',
-    gadgets+'/misc.S',
+    gadgets+'/crypto.S',
     offsets,
 ]
 
@@ -86,11 +85,13 @@ if get_option('kernel') == 'ish'
         error('Only asbestos is supported with ish kernel')
     endif
 
+    arch_kernel_src = ['kernel/arch/arm64/calls.c']
+
     src = [
         'kernel/init.c',
         'kernel/errno.c',
 
-        'kernel/calls.c',
+        'kernel/calls.c',] + arch_kernel_src + [
         'kernel/memory.c',
         'kernel/user.c',
         'kernel/vdso.c', vdso,
@@ -113,8 +114,10 @@ if get_option('kernel') == 'ish'
         'kernel/misc.c',
         'kernel/rtc.c',
         'kernel/eventfd.c',
+        'kernel/inotify.c',
         'kernel/ipc.c',
         'kernel/ptrace.c',
+        'kernel/native_offload.c',
 
         'kernel/fs.c',
         'kernel/fs_info.c',
@@ -235,12 +238,3 @@ foreach script : gdb_scripts
         command: ['ln', '-sf', '@INPUT@', '@OUTPUT@'],
         build_by_default: true)
 endforeach
-
-if not meson.is_cross_build()
-    # test for floating point library
-    float80_test = executable('float80_test', ['emu/float80.c', 'emu/float80-test.c'], dependencies: [libm])
-    test('float80', float80_test)
-endif
-
-e2e_test = find_program('tests/e2e/e2e.bash')
-test('e2e', e2e_test, args: ['-y'], timeout: 180)

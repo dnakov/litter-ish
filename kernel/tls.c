@@ -18,8 +18,8 @@ int task_set_thread_area(struct task *task, addr_t u_info) {
         return _EFAULT;
 
     // On a real system, TLS works by creating a special segment pointing to
-    // the TLS buffer. Our shitty emulation of that is to ignore attempts to
-    // modify GS and add this address to any memory reference that uses GS.
+    // the TLS buffer. The emulator models this by ignoring attempts to modify
+    // GS directly and adding this base address to memory references using GS.
     task->cpu.tls_ptr = info.base_addr;
 
     if (info.entry_number == (unsigned) -1) {

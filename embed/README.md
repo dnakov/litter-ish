@@ -11,7 +11,7 @@ host process
 │   └── writer thread     writes framed requests to supervisor pipe
 │
 iSH kernel pthread
-└── PID 1 = ish-supervisor          static i386 musl ELF, ~411 KB
+└── PID 1 = ish-supervisor          static AArch64 musl ELF
     ├── poll(2) loop
     │   ├── stdin (request frames from host)
     │   ├── SIGCHLD self-pipe (reap children)
@@ -29,7 +29,7 @@ Each session is a separate `fork+execve` child of the supervisor, with its own p
 | Crate | Role |
 |---|---|
 | `protocol/`  | `#![no_std] + alloc` postcard-encoded wire types shared by host and supervisor. `PROTOCOL_VERSION` is checked at handshake; mismatched binaries fail loudly. |
-| `supervisor/`| The PID-1 ELF. Static-linked i686 musl, no async runtime, single-threaded `poll(2)` loop. |
+| `supervisor/`| The PID-1 ELF. Static-linked AArch64 musl, no async runtime, single-threaded `poll(2)` loop. |
 | `host/`      | The async public API (`IshInstance`, `IshSession`, …). `build.rs` drives Meson + Ninja for the iSH C side and cross-builds the supervisor. |
 
 ## Public API surface
@@ -53,7 +53,7 @@ let (exit_code, output) = ish.run_oneshot(&argv, &cwd, &env, Some(timeout_ms));
 
 ## Build prerequisites
 
-- Rust toolchain with the `i686-unknown-linux-musl` target installed (`rustup target add i686-unknown-linux-musl`). The supervisor cross-builds via `rust-lld`, which ships with rustup, so no host C cross-toolchain is needed.
+- Rust toolchain with the `aarch64-unknown-linux-musl` target installed (`rustup target add aarch64-unknown-linux-musl`). The supervisor cross-builds via `rust-lld`, which ships with rustup, so no host C cross-toolchain is needed.
 - Meson + Ninja (`brew install meson ninja` on macOS, apt on Linux).
 - LLVM's `clang` and `lld` for iSH's vdso step (`brew install llvm` on macOS — see `vdso/meson.build`).
 - A fakefs rootfs for testing. For dev builds the existing one at `<repo>/build/alpine-fakefs` works; production consumers ship `fs.tar.gz` produced by `build-rootfs.sh`.
@@ -67,7 +67,7 @@ cargo test -p ish-embed-host --lib
 
 # End-to-end against an existing rootfs (echo, exit codes, stdin pipe,
 # concurrent sessions, cancel via SIGKILL)
-ISH_TEST_ROOTFS=$PWD/../build/alpine-fakefs/data \
+ISH_TEST_ROOTFS=$PWD/../build/fs/data \
     cargo test -p ish-embed-host --test smoke -- --test-threads=1
 ```
 
@@ -91,6 +91,6 @@ Set `ISH_TRACE_FRAMES=1` to dump every host↔supervisor frame to stderr.
 
 Frames are length-prefixed (`u32` LE) postcard-encoded enums.
 
-## Why a separate i386 supervisor
+## Why a separate guest supervisor
 
-iSH is an x86 emulator. Its PID 1's mm is loaded by `do_execve` and its execution is the emulator loop, so init's "code" must be i386 ELF that runs under the emulator — host code can't *be* PID 1. Forking from outside an iSH task is unsafe (the kernel's `fork` copies `current`'s state, which only the emulator's pthread has set up). So the supervisor is a minimal static binary built by Cargo (`cargo build --release --target i686-unknown-linux-musl`) and embedded into the host crate via `include_bytes!`. At boot the host crate writes it to `/sbin/ish-supervisor` inside the fakefs through the kernel's own `generic_open()`, so fakefs metadata is registered correctly. Production rootfs builds may bake the supervisor in at fakefsify time; the runtime path is the dev-mode fallback.
+iSH runs guest code inside the emulated Linux task, so PID 1 has to be a guest ELF loaded by `do_execve`; host code cannot be PID 1. Forking from outside an iSH task is unsafe because the kernel's `fork` copies `current` state, which only the emulator pthread has set up. The supervisor is a minimal static AArch64 binary built by Cargo (`cargo build --profile supervisor --target aarch64-unknown-linux-musl`) and embedded into the host crate via `include_bytes!`. At boot the host crate writes it to `/sbin/ish-supervisor` inside the fakefs through the kernel's own `generic_open()`, so fakefs metadata is registered correctly. Production rootfs builds may bake the supervisor in at fakefsify time; the runtime path is the dev-mode fallback.

@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <setjmp.h>
+#include <errno.h>
 #include "misc.h"
 #include "debug.h"
 
@@ -137,6 +138,14 @@ static inline void read_wrlock(wrlock_t *lock) {
     assert(lock->val >= 0);
     lock->val++;
 }
+static inline bool read_wrtrylock(wrlock_t *lock) {
+    int err = pthread_rwlock_tryrdlock(&lock->l);
+    if (err == EBUSY || err == EAGAIN) return false;
+    if (err != 0) __builtin_trap();
+    assert(lock->val >= 0);
+    lock->val++;
+    return true;
+}
 static inline void read_wrunlock(wrlock_t *lock) {
     assert(lock->val > 0);
     lock->val--;
@@ -151,6 +160,14 @@ static inline void __write_wrlock(wrlock_t *lock, const char *file, int line) {
     lock->pid = current_pid();
 }
 #define write_wrlock(lock) __write_wrlock(lock, __FILE__, __LINE__)
+static inline bool write_wrtrylock(wrlock_t *lock) {
+    int err = pthread_rwlock_trywrlock(&lock->l);
+    if (err == EBUSY) return false;
+    if (err != 0) __builtin_trap();
+    assert(lock->val == 0);
+    lock->val = -1;
+    return true;
+}
 static inline void write_wrunlock(wrlock_t *lock) {
     assert(lock->val == -1);
     lock->val = lock->line = lock->pid = 0;

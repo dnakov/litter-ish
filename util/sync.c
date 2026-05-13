@@ -59,7 +59,7 @@ int wait_for_ignore_signals(cond_t *cond, lock_t *lock, struct timespec *timeout
         clock_gettime(CLOCK_MONOTONIC, &abs_timeout);
         abs_timeout.tv_sec += timeout->tv_sec;
         abs_timeout.tv_nsec += timeout->tv_nsec;
-        if (abs_timeout.tv_nsec > 1000000000) {
+        if (abs_timeout.tv_nsec >= 1000000000) {
             abs_timeout.tv_sec++;
             abs_timeout.tv_nsec -= 1000000000;
         }

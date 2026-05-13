@@ -45,12 +45,12 @@ fn try_claim_singleton() -> Result<(), IshError> {
 
 #[derive(Debug, Clone)]
 pub struct SpawnOpts {
-    pub argv:       Vec<String>,
-    pub envp:       Option<Vec<(String, String)>>,
-    pub cwd:        Option<PathBuf>,
-    pub tty:        bool,
+    pub argv: Vec<String>,
+    pub envp: Option<Vec<(String, String)>>,
+    pub cwd: Option<PathBuf>,
+    pub tty: bool,
     pub pipe_stdin: bool,
-    pub arg0:       Option<String>,
+    pub arg0: Option<String>,
 }
 
 impl SpawnOpts {
@@ -69,8 +69,8 @@ impl SpawnOpts {
         WireSpawnOpts {
             argv: self.argv,
             envp: self.envp,
-            cwd:  self.cwd.map(|p| p.to_string_lossy().into_owned()),
-            tty:  self.tty,
+            cwd: self.cwd.map(|p| p.to_string_lossy().into_owned()),
+            tty: self.tty,
             pipe_stdin: self.pipe_stdin,
             arg0: self.arg0,
         }
@@ -79,16 +79,16 @@ impl SpawnOpts {
 
 pub(crate) struct InstanceInner {
     next_reqid: AtomicU32,
-    sessions:   Mutex<HashMap<SessionId, Weak<SessionInner>>>,
-    writer_tx:  std::sync::mpsc::Sender<HostToSupervisor>,
-    poisoned:   AtomicBool,
+    sessions: Mutex<HashMap<SessionId, Weak<SessionInner>>>,
+    writer_tx: std::sync::mpsc::Sender<HostToSupervisor>,
+    poisoned: AtomicBool,
     /// Only used during boot; signalled from the kernel exit hook.
     kernel_exit: Arc<KernelExit>,
 }
 
 struct KernelExit {
-    mtx:    parking_lot::Mutex<Option<i32>>,
-    cv:     parking_lot::Condvar,
+    mtx: parking_lot::Mutex<Option<i32>>,
+    cv: parking_lot::Condvar,
 }
 
 impl InstanceInner {
@@ -119,16 +119,38 @@ impl IshInstance {
             .map_err(|_| IshError::InvalidRootfs)?;
         let rc = unsafe { ffi::ish_ffi_mount_fakefs(rootfs_c.as_ptr()) };
         if rc < 0 {
-            return Err(IshError::KernelCall { call: "mount_fakefs", rc });
+            return Err(IshError::KernelCall {
+                call: "mount_fakefs",
+                rc,
+            });
         }
 
         // 2. Become PID 1.
         let rc = unsafe { ffi::ish_ffi_become_init() };
         if rc < 0 {
-            return Err(IshError::KernelCall { call: "become_init", rc });
+            return Err(IshError::KernelCall {
+                call: "become_init",
+                rc,
+            });
         }
 
-        // 3. Drop the supervisor binary into the fakefs at /sbin/ish-supervisor.
+        // 3. Mount guest pseudo-filesystems used by shells and language tools.
+        let rc = unsafe { ffi::ish_ffi_mount_procfs() };
+        if rc < 0 {
+            return Err(IshError::KernelCall {
+                call: "mount_procfs",
+                rc,
+            });
+        }
+        let rc = unsafe { ffi::ish_ffi_mount_devpts() };
+        if rc < 0 {
+            return Err(IshError::KernelCall {
+                call: "mount_devpts",
+                rc,
+            });
+        }
+
+        // 4. Drop the supervisor binary into the fakefs at /sbin/ish-supervisor.
         //    On a freshly-built production rootfs this file is already
         //    pre-baked at fakefsify time and the call is a fast overwrite;
         //    on dev rootfs it's the first time. We go through the kernel's
@@ -136,29 +158,28 @@ impl IshInstance {
         let supervisor_path = std::ffi::CString::new(SUPERVISOR_PATH_IN_ROOTFS).unwrap();
         let elf = crate::SUPERVISOR_ELF;
         let rc = unsafe {
-            ffi::ish_ffi_install_executable(
-                supervisor_path.as_ptr(),
-                elf.as_ptr(),
-                elf.len(),
-            )
+            ffi::ish_ffi_install_executable(supervisor_path.as_ptr(), elf.as_ptr(), elf.len())
         };
         if rc < 0 {
-            return Err(IshError::KernelCall { call: "install_executable", rc });
+            return Err(IshError::KernelCall {
+                call: "install_executable",
+                rc,
+            });
         }
 
-        // 4. Pipes for supervisor I/O. fd 0 in the supervisor reads from
+        // 5. Pipes for supervisor I/O. fd 0 in the supervisor reads from
         //    `host_stdin_w`; fd 1 (and fd 2, dup'd) writes to
         //    `host_stdout_r`. `make_pipe()` returns (read_end, write_end);
         //    we destructure so the host owns the writable end on the stdin
         //    pipe and the readable end on the stdout pipe.
-        let (kernel_in_r,  host_stdin_w)  = make_pipe()?;
+        let (kernel_in_r, host_stdin_w) = make_pipe()?;
         let (host_stdout_r, kernel_out_w_a) = make_pipe()?;
         let kernel_out_w_b = unsafe { libc::dup(kernel_out_w_a.as_raw_fd()) };
         if kernel_out_w_b < 0 {
             return Err(IshError::Io(std::io::Error::last_os_error()));
         }
 
-        // 5. Install the kernel side of the pipes as init's stdio. After
+        // 6. Install the kernel side of the pipes as init's stdio. After
         //    this call the kernel owns those fds.
         let rc = unsafe {
             ffi::ish_ffi_install_pipe_stdio(
@@ -168,12 +189,17 @@ impl IshInstance {
             )
         };
         if rc < 0 {
-            return Err(IshError::KernelCall { call: "install_stdio", rc });
+            return Err(IshError::KernelCall {
+                call: "install_stdio",
+                rc,
+            });
         }
 
-        // 6. chdir.
+        // 7. chdir.
         let workdir_c = match workdir {
-            Some(p) => CString::new(p.as_os_str().as_bytes()).map_err(|_| IshError::InvalidRootfs)?,
+            Some(p) => {
+                CString::new(p.as_os_str().as_bytes()).map_err(|_| IshError::InvalidRootfs)?
+            }
             None => CString::new("/").unwrap(),
         };
         let rc = unsafe { ffi::ish_ffi_chdir(workdir_c.as_ptr()) };
@@ -185,7 +211,7 @@ impl IshInstance {
         //    so we don't race against the kernel thread.
         let kernel_exit = Arc::new(KernelExit {
             mtx: parking_lot::Mutex::new(None),
-            cv:  parking_lot::Condvar::new(),
+            cv: parking_lot::Condvar::new(),
         });
         register_exit_hook(kernel_exit.clone());
 
@@ -194,8 +220,19 @@ impl IshInstance {
         // strings followed by an additional empty NUL terminator. argc is
         // explicit; envp is autocounted by walking until the trailing '\0'.
         let argv0 = b"ish-supervisor\0\0";
-        let argv  = b"ish-supervisor\0\0";
-        let envp  = b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0\0";
+        let argv = b"ish-supervisor\0\0";
+        let envp = b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0\
+                     HOME=/root\0\
+                     GODEBUG=asyncpreemptoff=1\0\
+                     GOMAXPROCS=2\0\
+                     GOROOT=/usr/lib/go\0\
+                     OPENSSL_armcap=0\0\
+                     NO_COLOR=1\0\
+                     PIP_PROGRESS_BAR=off\0\
+                     PYTHONMALLOC=malloc\0\
+                     PYTHONDONTWRITEBYTECODE=1\0\
+                     JSC_numberOfGCMarkers=1\0\
+                     JSC_useConcurrentGC=0\0\0";
         let path_c = CString::new(SUPERVISOR_PATH_IN_ROOTFS).unwrap();
         let rc = unsafe {
             ffi::ish_ffi_execve(
@@ -218,7 +255,10 @@ impl IshInstance {
         // 9. Hand control to the kernel pthread.
         let rc = unsafe { ffi::ish_ffi_task_start() };
         if rc < 0 {
-            return Err(IshError::KernelCall { call: "task_start", rc });
+            return Err(IshError::KernelCall {
+                call: "task_start",
+                rc,
+            });
         }
 
         // 10. Now that the kernel is running, set up the writer/reader
@@ -232,9 +272,9 @@ impl IshInstance {
 
         let inner = Arc::new(InstanceInner {
             next_reqid: AtomicU32::new(1),
-            sessions:   Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
             writer_tx,
-            poisoned:   AtomicBool::new(false),
+            poisoned: AtomicBool::new(false),
             kernel_exit,
         });
         let _ = GLOBAL_INSTANCE.set(Arc::downgrade(&inner));
@@ -250,7 +290,8 @@ impl IshInstance {
         let mut reader_pipe = OwnedFdReader::new(host_stdout_r);
         let ready: Option<SupervisorToHost> = read_frame(&mut reader_pipe)?;
         match ready {
-            Some(SupervisorToHost::Ready { protocol_version }) if protocol_version == PROTOCOL_VERSION => {}
+            Some(SupervisorToHost::Ready { protocol_version })
+                if protocol_version == PROTOCOL_VERSION => {}
             Some(SupervisorToHost::Ready { protocol_version }) => {
                 return Err(IshError::ProtocolMismatch {
                     host: PROTOCOL_VERSION,
@@ -261,7 +302,9 @@ impl IshInstance {
                 return Err(IshError::Supervisor(msg));
             }
             Some(other) => {
-                return Err(IshError::Supervisor(format!("unexpected first frame: {other:?}")));
+                return Err(IshError::Supervisor(format!(
+                    "unexpected first frame: {other:?}"
+                )));
             }
             None => return Err(IshError::SupervisorExited),
         }
@@ -285,7 +328,7 @@ impl IshInstance {
         }
         self.inner.send_frame(HostToSupervisor::Open {
             reqid: id,
-            opts:  opts.into_wire(),
+            opts: opts.into_wire(),
         })?;
         Ok(Arc::new(IshSession::from_inner_arc(session_inner)))
     }
@@ -298,6 +341,20 @@ impl IshInstance {
         env: &std::collections::HashMap<String, String>,
         timeout_ms: Option<u64>,
     ) -> (i32, Vec<u8>) {
+        self.run_oneshot_streaming(argv, cwd, env, timeout_ms, |_| {})
+    }
+
+    pub fn run_oneshot_streaming<F>(
+        &self,
+        argv: &[String],
+        cwd: &Path,
+        env: &std::collections::HashMap<String, String>,
+        timeout_ms: Option<u64>,
+        mut on_output: F,
+    ) -> (i32, Vec<u8>)
+    where
+        F: FnMut(&[u8]),
+    {
         // Build a small dedicated current-thread runtime so we can be
         // called from non-tokio threads (which is how the iOS exec hook
         // is invoked from codex-core).
@@ -312,8 +369,8 @@ impl IshInstance {
             let opts = SpawnOpts {
                 argv: argv.to_vec(),
                 envp: Some(env.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
-                cwd:  Some(cwd.to_path_buf()),
-                tty:  false,
+                cwd: Some(cwd.to_path_buf()),
+                tty: false,
                 pipe_stdin: false,
                 arg0: None,
             };
@@ -321,7 +378,7 @@ impl IshInstance {
                 Ok(s) => s,
                 Err(e) => return (-1, format!("spawn: {e}\n").into_bytes()),
             };
-            drain_to_completion(&session, timeout_ms).await
+            drain_to_completion_streaming(&session, timeout_ms, &mut on_output).await
         })
     }
 
@@ -363,7 +420,9 @@ fn writer_loop(fd: OwnedFd, rx: std::sync::mpsc::Receiver<HostToSupervisor>) {
         let frame = match rx.recv() {
             Ok(f) => f,
             Err(e) => {
-                if trace { eprintln!("[ish-out] writer rx closed: {e}"); }
+                if trace {
+                    eprintln!("[ish-out] writer rx closed: {e}");
+                }
                 break;
             }
         };
@@ -371,7 +430,9 @@ fn writer_loop(fd: OwnedFd, rx: std::sync::mpsc::Receiver<HostToSupervisor>) {
             eprintln!("[ish-out] {frame:?}");
         }
         if let Err(e) = ish_embed_protocol::write_frame(&mut writer, &frame) {
-            if trace { eprintln!("[ish-out] writer write_frame error: {e}"); }
+            if trace {
+                eprintln!("[ish-out] writer write_frame error: {e}");
+            }
             break;
         }
     }
@@ -382,7 +443,7 @@ fn reader_loop(mut reader: OwnedFdReader, inner: Arc<InstanceInner>) {
         match read_frame::<_, SupervisorToHost>(&mut reader) {
             Ok(Some(frame)) => dispatch(&inner, frame),
             Ok(None) => break,
-            Err(_)   => break,
+            Err(_) => break,
         }
     }
     // Reader exit: poison the instance so further sends fail fast.
@@ -412,12 +473,21 @@ fn dispatch(inner: &InstanceInner, frame: SupervisorToHost) {
                 s.on_opened(pid);
             }
         }
-        SupervisorToHost::Output { reqid, seq, stream, bytes } => {
+        SupervisorToHost::Output {
+            reqid,
+            seq,
+            stream,
+            bytes,
+        } => {
             if let Some(s) = lookup_session(inner, reqid) {
                 s.on_output(seq, stream.into(), Bytes::from(bytes));
             }
         }
-        SupervisorToHost::Exited { reqid, exit_code, term_signal } => {
+        SupervisorToHost::Exited {
+            reqid,
+            exit_code,
+            term_signal,
+        } => {
             if let Some(s) = lookup_session(inner, reqid) {
                 s.on_exited(exit_code, term_signal);
             }
@@ -428,12 +498,18 @@ fn dispatch(inner: &InstanceInner, frame: SupervisorToHost) {
             }
             inner.sessions.lock().remove(&reqid);
         }
-        SupervisorToHost::Err { reqid: Some(reqid), msg, .. } => {
+        SupervisorToHost::Err {
+            reqid: Some(reqid),
+            msg,
+            ..
+        } => {
             if let Some(s) = lookup_session(inner, reqid) {
                 s.on_failed(msg);
             }
         }
-        SupervisorToHost::Err { reqid: None, msg, .. } => {
+        SupervisorToHost::Err {
+            reqid: None, msg, ..
+        } => {
             // Instance-level error: poison + fail every session.
             inner.poisoned.store(true, Ordering::Release);
             let sessions: Vec<Arc<SessionInner>> = inner
@@ -455,7 +531,14 @@ fn lookup_session(inner: &InstanceInner, id: SessionId) -> Option<Arc<SessionInn
 
 /// Drain a session until it exits (or `timeout_ms` elapses), returning
 /// (exit_code, merged_output_bytes). Used by `run_oneshot`.
-async fn drain_to_completion(session: &IshSession, timeout_ms: Option<u64>) -> (i32, Vec<u8>) {
+async fn drain_to_completion_streaming<F>(
+    session: &IshSession,
+    timeout_ms: Option<u64>,
+    on_output: &mut F,
+) -> (i32, Vec<u8>)
+where
+    F: FnMut(&[u8]),
+{
     use tokio::time::Instant;
 
     let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
@@ -476,7 +559,10 @@ async fn drain_to_completion(session: &IshSession, timeout_ms: Option<u64>) -> (
             return (-1, output);
         }
         let wait_ms = remaining.map(|d| d.as_millis() as u64).unwrap_or(60_000);
-        let read = match session.read(Some(next_seq), Some(64 * 1024), Some(wait_ms)).await {
+        let read = match session
+            .read(Some(next_seq), Some(64 * 1024), Some(wait_ms))
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 output.extend_from_slice(format!("read error: {e}\n").as_bytes());
@@ -485,10 +571,8 @@ async fn drain_to_completion(session: &IshSession, timeout_ms: Option<u64>) -> (
         };
         for chunk in &read.chunks {
             output.extend_from_slice(&chunk.bytes);
+            on_output(&chunk.bytes);
             next_seq = chunk.seq;
-        }
-        if read.exited && read.chunks.is_empty() {
-            return (read.exit_code.unwrap_or(-1), output);
         }
         if read.closed {
             return (read.exit_code.unwrap_or(-1), output);
@@ -525,7 +609,9 @@ unsafe extern "C" fn exit_hook_trampoline(code: std::os::raw::c_int) {
 fn register_exit_hook(_: Arc<KernelExit>) {
     // The trampoline reads global state; the Arc is kept alive on the
     // instance side. We just need to install the trampoline once.
-    unsafe { ffi::ish_ffi_register_exit_hook(Some(exit_hook_trampoline)); }
+    unsafe {
+        ffi::ish_ffi_register_exit_hook(Some(exit_hook_trampoline));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -537,7 +623,9 @@ pub(crate) struct OwnedFdReader {
 }
 
 impl OwnedFdReader {
-    fn new(fd: OwnedFd) -> Self { Self { fd } }
+    fn new(fd: OwnedFd) -> Self {
+        Self { fd }
+    }
 }
 
 impl Read for OwnedFdReader {
@@ -567,7 +655,9 @@ struct OwnedFdWriter {
 }
 
 impl OwnedFdWriter {
-    fn new(fd: OwnedFd) -> Self { Self { fd } }
+    fn new(fd: OwnedFd) -> Self {
+        Self { fd }
+    }
 }
 
 impl Write for OwnedFdWriter {

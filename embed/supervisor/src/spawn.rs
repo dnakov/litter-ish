@@ -27,7 +27,7 @@ impl std::fmt::Display for SpawnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SpawnError::Pipe(e) => write!(f, "pipe: {e}"),
-            SpawnError::Pty(e)  => write!(f, "openpty: {e}"),
+            SpawnError::Pty(e) => write!(f, "openpty: {e}"),
             SpawnError::Fork(e) => write!(f, "fork: {e}"),
             SpawnError::BadArgv => write!(f, "argv must be non-empty"),
         }
@@ -43,9 +43,8 @@ pub fn spawn(reqid: u32, opts: SpawnOpts) -> Result<OpenedSession, SpawnError> {
     // post-fork we can't allocate safely from async-signal contexts. CStrings
     // and the env vector are stable references into Rust-side allocations
     // owned by the parent until the child execve's.
-    let arg0_path: CString = CString::new(
-        opts.arg0.as_deref().unwrap_or(&opts.argv[0]).as_bytes(),
-    ).map_err(|_| SpawnError::BadArgv)?;
+    let arg0_path: CString = CString::new(opts.arg0.as_deref().unwrap_or(&opts.argv[0]).as_bytes())
+        .map_err(|_| SpawnError::BadArgv)?;
     let argv_cstrs: Vec<CString> = opts
         .argv
         .iter()
@@ -140,7 +139,9 @@ pub fn spawn(reqid: u32, opts: SpawnOpts) -> Result<OpenedSession, SpawnError> {
         // through to the closefrom-style sweep below.
 
         if let Some(cwd) = &cwd_cstr {
-            unsafe { libc::chdir(cwd.as_ptr()); }
+            unsafe {
+                libc::chdir(cwd.as_ptr());
+            }
         }
 
         // Close every other fd we might have inherited. Anything we needed
@@ -151,9 +152,11 @@ pub fn spawn(reqid: u32, opts: SpawnOpts) -> Result<OpenedSession, SpawnError> {
         // exec
         let envp = match &envp_ptrs {
             Some(p) => p.as_ptr(),
-            None    => unsafe {
+            None => unsafe {
                 // Inherit our own environ.
-                extern "C" { static environ: *const *const libc::c_char; }
+                extern "C" {
+                    static environ: *const *const libc::c_char;
+                }
                 environ as *const *const libc::c_char
             },
         };
@@ -163,7 +166,9 @@ pub fn spawn(reqid: u32, opts: SpawnOpts) -> Result<OpenedSession, SpawnError> {
 
         // execve only returns on failure. Send the errno to the parent
         // and bail.
-        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+        let errno = std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or(libc::EIO);
         let bytes = (errno as i32).to_le_bytes();
         unsafe {
             let _ = libc::write(err_w_raw, bytes.as_ptr() as *const libc::c_void, 4);
@@ -183,19 +188,28 @@ pub fn spawn(reqid: u32, opts: SpawnOpts) -> Result<OpenedSession, SpawnError> {
     let exec_err = read_full(err_r.as_raw_fd(), &mut errno_buf);
     drop(err_r);
     let spawn_error = match exec_err {
-        Ok(0)        => None,
-        Ok(_)        => {
+        Ok(0) => None,
+        Ok(_) => {
             let errno = i32::from_le_bytes(errno_buf);
             // Reap the failed child immediately so the supervisor doesn't
             // see a stale SIGCHLD later.
-            unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0); }
-            Some(format!("execve: {}", std::io::Error::from_raw_os_error(errno)))
+            unsafe {
+                libc::waitpid(pid, std::ptr::null_mut(), 0);
+            }
+            Some(format!(
+                "execve: {}",
+                std::io::Error::from_raw_os_error(errno)
+            ))
         }
-        Err(e)       => Some(format!("exec-error pipe: {e}")),
+        Err(e) => Some(format!("exec-error pipe: {e}")),
     };
 
+    set_nonblocking(parent_out.as_raw_fd());
     let session = Session::new(reqid, pid, stream, parent_out, parent_stdin_w);
-    Ok(OpenedSession { session, spawn_error })
+    Ok(OpenedSession {
+        session,
+        spawn_error,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -204,11 +218,13 @@ pub fn spawn(reqid: u32, opts: SpawnOpts) -> Result<OpenedSession, SpawnError> {
 
 fn pipe2_cloexec() -> Result<(OwnedFd, OwnedFd), SpawnError> {
     let mut fds = [-1i32; 2];
-    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if rc < 0 {
         return Err(SpawnError::Pipe(std::io::Error::last_os_error()));
     }
-    // SAFETY: pipe2 returns valid fds we now own.
+    set_cloexec(fds[0]);
+    set_cloexec(fds[1]);
+    // SAFETY: pipe returns valid fds we now own.
     let r = unsafe { OwnedFd::from_raw_fd(fds[0]) };
     let w = unsafe { OwnedFd::from_raw_fd(fds[1]) };
     Ok((r, w))
@@ -247,6 +263,15 @@ fn set_cloexec(fd: RawFd) {
     }
 }
 
+fn set_nonblocking(fd: RawFd) {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
 fn read_full(fd: RawFd, buf: &mut [u8]) -> std::io::Result<usize> {
     let mut filled = 0usize;
     while filled < buf.len() {
@@ -258,7 +283,7 @@ fn read_full(fd: RawFd, buf: &mut [u8]) -> std::io::Result<usize> {
             )
         };
         match n {
-            0          => return Ok(filled),
+            0 => return Ok(filled),
             n if n < 0 => {
                 let err = std::io::Error::last_os_error();
                 if err.kind() == std::io::ErrorKind::Interrupted {
@@ -292,11 +317,15 @@ fn close_all_fds_above(floor: RawFd, keep: RawFd) {
             }
             if let Ok(fd) = s.parse::<RawFd>() {
                 if fd > floor && fd != keep {
-                    unsafe { libc::close(fd); }
+                    unsafe {
+                        libc::close(fd);
+                    }
                 }
             }
         }
-        unsafe { libc::closedir(dir); }
+        unsafe {
+            libc::closedir(dir);
+        }
         return;
     }
 
@@ -307,7 +336,8 @@ fn close_all_fds_above(floor: RawFd, keep: RawFd) {
         if fd == keep {
             continue;
         }
-        unsafe { libc::close(fd); }
+        unsafe {
+            libc::close(fd);
+        }
     }
 }
-

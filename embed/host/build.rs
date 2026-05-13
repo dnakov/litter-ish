@@ -4,9 +4,9 @@
 //! 1. Drive Meson + Ninja to build iSH's existing C static libs
 //!    (`libish`, `libish_emu`, `libfakefs`) so we can link them.
 //! 2. Compile the small C shim at `embed/ffi.c` and run bindgen over
-//!    `embed/ffi.h` so the Rust crate has typed access to the seven kernel
-//!    calls it needs.
-//! 3. Cross-build the in-iSH supervisor binary for `i686-unknown-linux-musl`
+//!    `embed/ffi.h` so the Rust crate has typed access to the kernel calls
+//!    it needs.
+//! 3. Cross-build the in-iSH supervisor binary for `aarch64-unknown-linux-musl`
 //!    and embed it as a `.rodata` blob so the host crate is self-contained
 //!    (no separate file to ship).
 //!
@@ -69,6 +69,7 @@ fn main() {
         .file(&ffi_c)
         .include(&ish_root)
         .include(&embed_dir)
+        .define("GUEST_ARM64", "1")
         .flag_if_supported("-std=gnu11")
         .flag_if_supported("-Wno-implicit-function-declaration")
         .compile("ish_embed_ffi");
@@ -81,6 +82,7 @@ fn main() {
         .header(ffi_h.to_string_lossy().to_string())
         .clang_arg(format!("-I{}", ish_root.display()))
         .clang_arg(format!("-I{}", embed_dir.display()))
+        .clang_arg("-DGUEST_ARM64=1")
         .allowlist_function("ish_ffi_.*")
         .allowlist_type("ish_ffi_.*")
         .generate_comments(true)
@@ -95,7 +97,7 @@ fn main() {
 
     // -- 3. Supervisor cross-build -----------------------------------------
     let supervisor_src = embed_dir.join("supervisor");
-    println!("cargo:rerun-if-changed={}", supervisor_src.display());
+    emit_rerun_if_changed_recursive(&supervisor_src);
     let supervisor_bin = build_supervisor(&supervisor_src, &out_dir);
 
     // Stash the binary under a stable name in OUT_DIR; lib.rs will
@@ -104,6 +106,24 @@ fn main() {
     std::fs::copy(&supervisor_bin, &staged)
         .unwrap_or_else(|e| panic!("copy supervisor.bin {}: {e}", supervisor_bin.display()));
     println!("cargo:rustc-env=ISH_SUPERVISOR_BIN={}", staged.display());
+}
+
+fn emit_rerun_if_changed_recursive(path: &Path) {
+    println!("cargo:rerun-if-changed={}", path.display());
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let child = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            emit_rerun_if_changed_recursive(&child);
+        } else if file_type.is_file() {
+            println!("cargo:rerun-if-changed={}", child.display());
+        }
+    }
 }
 
 fn run_meson(ish_root: &Path, build_dir: &Path, cross_file: Option<&Path>) {
@@ -126,9 +146,18 @@ fn run_meson(ish_root: &Path, build_dir: &Path, cross_file: Option<&Path>) {
         // rediscover the host toolchain. Our `[binaries]` section in the
         // cross-file already pins the iOS-side compilers explicitly.
         for var in [
-            "CC", "CXX", "AR", "RANLIB", "OBJC", "STRIP",
-            "CFLAGS", "CXXFLAGS", "LDFLAGS", "OBJCFLAGS",
-            "RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER",
+            "CC",
+            "CXX",
+            "AR",
+            "RANLIB",
+            "OBJC",
+            "STRIP",
+            "CFLAGS",
+            "CXXFLAGS",
+            "LDFLAGS",
+            "OBJCFLAGS",
+            "RUSTC_WRAPPER",
+            "CARGO_BUILD_RUSTC_WRAPPER",
         ] {
             cmd.env_remove(var);
         }
@@ -157,11 +186,34 @@ fn run_meson(ish_root: &Path, build_dir: &Path, cross_file: Option<&Path>) {
 /// the path to the cross-file, or `None` for native builds (Meson autodetects
 /// the host toolchain just fine).
 fn maybe_write_cross_file(out_dir: &Path, target: &str) -> Option<PathBuf> {
-    let (sdk_platform, sdk_name, arch, min_flag, system, cpu_family, is_simulator) = match target
-    {
-        "aarch64-apple-ios"            => ("iPhoneOS",        "iPhoneOS",       "arm64",  "-mios-version-min=16.0",            "darwin", "aarch64", false),
-        "aarch64-apple-ios-sim"        => ("iPhoneSimulator", "iPhoneSimulator","arm64",  "-mios-simulator-version-min=16.0",  "darwin", "aarch64", true),
-        "x86_64-apple-ios"             => ("iPhoneSimulator", "iPhoneSimulator","x86_64", "-mios-simulator-version-min=16.0",  "darwin", "x86_64",  true),
+    let (sdk_platform, sdk_name, arch, min_flag, system, cpu_family, is_simulator) = match target {
+        "aarch64-apple-ios" => (
+            "iPhoneOS",
+            "iPhoneOS",
+            "arm64",
+            "-mios-version-min=16.0",
+            "darwin",
+            "aarch64",
+            false,
+        ),
+        "aarch64-apple-ios-sim" => (
+            "iPhoneSimulator",
+            "iPhoneSimulator",
+            "arm64",
+            "-mios-simulator-version-min=16.0",
+            "darwin",
+            "aarch64",
+            true,
+        ),
+        "x86_64-apple-ios" => (
+            "iPhoneSimulator",
+            "iPhoneSimulator",
+            "x86_64",
+            "-mios-simulator-version-min=16.0",
+            "darwin",
+            "x86_64",
+            true,
+        ),
         // Host macs: no cross-file needed.
         _ => return None,
     };
@@ -170,18 +222,14 @@ fn maybe_write_cross_file(out_dir: &Path, target: &str) -> Option<PathBuf> {
 
     let xcode_select = Command::new("xcode-select").arg("-p").output();
     let developer_dir = match xcode_select {
-        Ok(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        }
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         _ => "/Applications/Xcode.app/Contents/Developer".to_string(),
     };
 
     let sdk = format!(
         "{developer_dir}/Platforms/{sdk_platform}.platform/Developer/SDKs/{sdk_platform}.sdk"
     );
-    let xctool = format!(
-        "{developer_dir}/Toolchains/XcodeDefault.xctoolchain/usr/bin"
-    );
+    let xctool = format!("{developer_dir}/Toolchains/XcodeDefault.xctoolchain/usr/bin");
 
     let body = format!(
         "[constants]\n\
@@ -232,7 +280,7 @@ fn build_supervisor(supervisor_src: &Path, out_dir: &Path) -> PathBuf {
             "--profile",
             "supervisor",
             "--target",
-            "i686-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
             "--target-dir",
         ])
         .arg(&target_dir)
@@ -243,7 +291,7 @@ fn build_supervisor(supervisor_src: &Path, out_dir: &Path) -> PathBuf {
         panic!("supervisor cross-build failed");
     }
     target_dir
-        .join("i686-unknown-linux-musl")
+        .join("aarch64-unknown-linux-musl")
         .join("supervisor")
         .join("ish-supervisor")
 }

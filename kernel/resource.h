@@ -36,6 +36,8 @@ struct rlimit32_ {
 
 dword_t sys_getrlimit32(dword_t resource, addr_t rlim_addr);
 dword_t sys_setrlimit32(dword_t resource, addr_t rlim_addr);
+dword_t sys_getrlimit64(dword_t resource, addr_t rlim_addr);
+dword_t sys_setrlimit64(dword_t resource, addr_t rlim_addr);
 dword_t sys_prlimit64(pid_t_ pid, dword_t resource, addr_t new_limit_addr, addr_t old_limit_addr);
 dword_t sys_old_getrlimit32(dword_t resource, addr_t rlim_addr);
 
@@ -68,6 +70,7 @@ dword_t sys_getrusage(dword_t who, addr_t rusage_addr);
 
 int_t sys_sched_getaffinity(pid_t_ pid, dword_t cpusetsize, addr_t cpuset_addr);
 int_t sys_sched_setaffinity(pid_t_ pid, dword_t cpusetsize, addr_t cpuset_addr);
+int_t sys_getcpu(addr_t cpu_addr, addr_t node_addr, addr_t tcache_addr);
 int_t sys_getpriority(int_t which, pid_t_ who);
 int_t sys_setpriority(int_t which, pid_t_ who, int_t prio);
 

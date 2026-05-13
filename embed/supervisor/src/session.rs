@@ -9,26 +9,26 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
 #[derive(Debug)]
 pub struct Session {
-    pub reqid:     u32,
-    pub pid:       libc::pid_t,
-    pub stream:    ish_embed_protocol::Stream,
+    pub reqid: u32,
+    pub pid: libc::pid_t,
+    pub stream: ish_embed_protocol::Stream,
     /// Parent end of the child's stdout (and stderr, merged). For tty
     /// sessions this is the pty master and is also the stdin write end.
-    pub output:    OwnedFd,
+    pub output: OwnedFd,
     /// Parent end of stdin for non-tty sessions when `pipe_stdin` was set.
     /// For tty sessions stdin is the master fd (== output); we set this to
     /// `None` and route writes through `output`.
-    pub stdin_w:   Option<OwnedFd>,
-    pub next_seq:  u64,
+    pub stdin_w: Option<OwnedFd>,
+    pub next_seq: u64,
     /// Set once SIGCHLD reaped this child. We may still have buffered
     /// output to drain before we can send Closed.
-    pub exit_code:   Option<i32>,
+    pub exit_code: Option<i32>,
     pub term_signal: Option<i32>,
     /// Set once we've sent Exited to the host.
     pub exited_announced: bool,
     /// Set once read() returned 0 / POLLHUP. We can't send Closed until
     /// both this and `exit_code.is_some()` are true.
-    pub eof:       bool,
+    pub eof: bool,
 }
 
 impl Session {
@@ -68,4 +68,3 @@ impl Session {
         None
     }
 }
-

@@ -1,13 +1,412 @@
 #define DEFAULT_CHANNEL instr
 #include "debug.h"
+#include <signal.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <time.h>
+#include <string.h>
+#include <stdlib.h>
 #include "asbestos/asbestos.h"
 #include "asbestos/gen.h"
 #include "asbestos/frame.h"
 #include "emu/cpu.h"
 #include "emu/interrupt.h"
+#include "emu/tlb.h"
+#include "kernel/memory.h"
 #include "util/list.h"
 
+// Thread-local recovery state for JIT crash handling.
+// When a host SIGSEGV occurs inside JIT code (due to a stale TLB pointer
+// from a concurrent CoW), the signal handler redirects PC to
+// jit_crash_trampoline via ucontext, which returns INT_GPF to the
+// dispatch loop. handle_interrupt resolves via mem_ptr (CoW/GROWSDOWN).
+//
+// This avoids the overhead of _setjmp on every block entry (~1.5% of
+// total execution time). The signal handler writes crash info directly
+// to cpu_state via the _cpu pointer (x1) from ucontext.
+__thread volatile sig_atomic_t in_jit;
+__thread volatile addr_t jit_saved_pc;  // block start PC, read by signal handler
+// Marker set to 1 on iSH execution threads so the signal handler can distinguish
+// iSH threads from app threads (Swift async, networking, UI).
+__thread int ish_thread_marker;
+
+// Architecture-specific instruction pointer access
+#if defined(GUEST_ARM64)
+#define CPU_IP(cpu) ((cpu)->pc)
+#define CPU_HAS_SINGLE_STEP 0
+#else
+#define CPU_IP(cpu) ((cpu)->eip)
+#define CPU_HAS_SINGLE_STEP ((cpu)->tf)
+#endif
+
 extern int current_pid(void);
+
+// Stubs / debug hooks referenced from assembly/gen.c/tlb.c
+// High-bit tracing is an opt-in diagnostic. It is useful when chasing W/X
+// register-extension bugs, but it is not a valid invariant for normal AArch64
+// execution: the dynamic linker and language runtimes legitimately keep tagged
+// and maskable 64-bit values in general-purpose registers.
+volatile bool g_trace_highbits = false;
+volatile addr_t g_watch_page_val = 0;
+
+#define TRACE_PC_MAX 16
+volatile bool g_trace_guest_pc = false;
+static addr_t g_trace_pc_vals[TRACE_PC_MAX];
+static addr_t g_trace_pc_masks[TRACE_PC_MAX];
+static int g_trace_pc_count = 0;
+
+static bool g_trace_gate_enabled = false;
+static addr_t g_trace_gate_pc = 0;
+static addr_t g_trace_gate_mask = ~(addr_t) 0;
+static bool g_trace_gate_x4_enabled = false;
+static uint64_t g_trace_gate_x4 = 0;
+static int g_trace_gate_budget = 0; // 0 = unlimited after first gate hit
+
+static __thread bool t_trace_gate_open = false;
+static __thread int t_trace_gate_left = 0;
+
+bool asbestos_should_trace_guest_pc(addr_t pc) {
+    if (!g_trace_guest_pc)
+        return false;
+    for (int i = 0; i < g_trace_pc_count; i++) {
+        if ((pc & g_trace_pc_masks[i]) == (g_trace_pc_vals[i] & g_trace_pc_masks[i]))
+            return true;
+    }
+    return false;
+}
+
+void asbestos_set_trace_pcs(const char *spec) {
+    g_trace_guest_pc = false;
+    g_trace_pc_count = 0;
+    if (spec == NULL || spec[0] == '\0')
+        return;
+
+    char *copy = strdup(spec);
+    if (copy == NULL)
+        return;
+
+    for (char *tok = strtok(copy, ", "); tok != NULL; tok = strtok(NULL, ", ")) {
+        if (*tok == '\0' || g_trace_pc_count >= TRACE_PC_MAX)
+            continue;
+
+        char *slash = strchr(tok, '/');
+        addr_t value = 0;
+        addr_t mask = ~(addr_t) 0;
+
+        if (slash != NULL) {
+            *slash = '\0';
+            value = (addr_t) strtoull(tok, NULL, 0);
+            mask = (addr_t) strtoull(slash + 1, NULL, 0);
+        } else {
+            value = (addr_t) strtoull(tok, NULL, 0);
+            // Convenience: small values are treated as guest-offset matchers
+            // (e.g., 0x170aec matches pc&0xffffff).
+            if (value <= 0xffffff)
+                mask = 0xffffff;
+        }
+
+        g_trace_pc_vals[g_trace_pc_count] = value;
+        g_trace_pc_masks[g_trace_pc_count] = mask;
+        g_trace_pc_count++;
+    }
+
+    free(copy);
+    g_trace_guest_pc = g_trace_pc_count > 0;
+    if (g_trace_guest_pc) {
+        fprintf(stderr, "TRACEPC enabled (%d matchers) via ISH_TRACE_PCS\n", g_trace_pc_count);
+    }
+}
+
+void asbestos_set_trace_gate(const char *pc_spec, const char *x4_spec, const char *budget_spec) {
+    g_trace_gate_enabled = false;
+    g_trace_gate_pc = 0;
+    g_trace_gate_mask = ~(addr_t) 0;
+    g_trace_gate_x4_enabled = false;
+    g_trace_gate_x4 = 0;
+    g_trace_gate_budget = 0;
+    t_trace_gate_open = false;
+    t_trace_gate_left = 0;
+
+    if (pc_spec == NULL || pc_spec[0] == '\0')
+        return;
+
+    char *copy = strdup(pc_spec);
+    if (copy == NULL)
+        return;
+
+    char *slash = strchr(copy, '/');
+    if (slash != NULL) {
+        *slash = '\0';
+        g_trace_gate_pc = (addr_t) strtoull(copy, NULL, 0);
+        g_trace_gate_mask = (addr_t) strtoull(slash + 1, NULL, 0);
+    } else {
+        g_trace_gate_pc = (addr_t) strtoull(copy, NULL, 0);
+        if (g_trace_gate_pc <= 0xffffff)
+            g_trace_gate_mask = 0xffffff;
+    }
+    free(copy);
+
+    if (x4_spec != NULL && x4_spec[0] != '\0') {
+        g_trace_gate_x4 = strtoull(x4_spec, NULL, 0);
+        g_trace_gate_x4_enabled = true;
+    }
+
+    if (budget_spec != NULL && budget_spec[0] != '\0') {
+        long budget = strtol(budget_spec, NULL, 0);
+        if (budget > 0)
+            g_trace_gate_budget = (int) budget;
+    }
+
+    g_trace_gate_enabled = true;
+    fprintf(stderr, "TRACEGATE enabled pc=%#llx/%#llx",
+            (unsigned long long) g_trace_gate_pc,
+            (unsigned long long) g_trace_gate_mask);
+    if (g_trace_gate_x4_enabled)
+        fprintf(stderr, " x4=%#llx", (unsigned long long) g_trace_gate_x4);
+    if (g_trace_gate_budget > 0)
+        fprintf(stderr, " budget=%d", g_trace_gate_budget);
+    fputc('\n', stderr);
+}
+
+static bool trace_gate_allow(struct cpu_state *cpu) {
+    if (!g_trace_gate_enabled)
+        return true;
+
+    if (t_trace_gate_open && g_trace_gate_budget > 0 && t_trace_gate_left == 0)
+        t_trace_gate_open = false;
+
+    if (!t_trace_gate_open) {
+        if ((cpu->pc & g_trace_gate_mask) != (g_trace_gate_pc & g_trace_gate_mask))
+            return false;
+        if (g_trace_gate_x4_enabled && cpu->x4 != g_trace_gate_x4)
+            return false;
+
+        t_trace_gate_open = true;
+        t_trace_gate_left = g_trace_gate_budget;
+        fprintf(stderr, "TRACEGATE open pc=%#llx x4=%#llx\n",
+                (unsigned long long) cpu->pc,
+                (unsigned long long) cpu->x4);
+    }
+
+    if (g_trace_gate_budget > 0 && t_trace_gate_left > 0)
+        t_trace_gate_left--;
+
+    return true;
+}
+
+static bool trace_read_u64(struct cpu_state *cpu, addr_t addr, uint64_t *out) {
+    struct mem *mem = container_of(cpu->mmu, struct mem, mmu);
+    void *ptr = mem_ptr(mem, addr, MEM_READ);
+    if (ptr == NULL)
+        return false;
+    memcpy(out, ptr, sizeof(*out));
+    return true;
+}
+
+static bool trace_read_u32(struct cpu_state *cpu, addr_t addr, uint32_t *out) {
+    struct mem *mem = container_of(cpu->mmu, struct mem, mmu);
+    void *ptr = mem_ptr(mem, addr, MEM_READ);
+    if (ptr == NULL)
+        return false;
+    memcpy(out, ptr, sizeof(*out));
+    return true;
+}
+
+static void trace_dump_obj(struct cpu_state *cpu, const char *name, addr_t addr) {
+    uint64_t q0 = 0, q1 = 0, q2 = 0, q3 = 0;
+    bool ok0 = trace_read_u64(cpu, addr + 0, &q0);
+    bool ok1 = trace_read_u64(cpu, addr + 8, &q1);
+    bool ok2 = trace_read_u64(cpu, addr + 16, &q2);
+    bool ok3 = trace_read_u64(cpu, addr + 24, &q3);
+    fprintf(stderr, "TRACEOBJ %s=%#llx +0=%s%#llx +8=%s%#llx +16=%s%#llx +24=%s%#llx\n",
+            name,
+            (unsigned long long) addr,
+            ok0 ? "" : "!", (unsigned long long) q0,
+            ok1 ? "" : "!", (unsigned long long) q1,
+            ok2 ? "" : "!", (unsigned long long) q2,
+            ok3 ? "" : "!", (unsigned long long) q3);
+}
+
+void jit_trace_regs(struct cpu_state *cpu) {
+    if (!trace_gate_allow(cpu))
+        return;
+
+    fprintf(stderr,
+            "TRACEPC pc=%#llx x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx x5=%#llx x19=%#llx x20=%#llx x21=%#llx x22=%#llx x23=%#llx x24=%#llx x25=%#llx x26=%#llx x27=%#llx x30=%#llx\n",
+            (unsigned long long) cpu->pc,
+            (unsigned long long) cpu->x0,
+            (unsigned long long) cpu->x1,
+            (unsigned long long) cpu->x2,
+            (unsigned long long) cpu->x3,
+            (unsigned long long) cpu->x4,
+            (unsigned long long) cpu->x5,
+            (unsigned long long) cpu->x19,
+            (unsigned long long) cpu->x20,
+            (unsigned long long) cpu->x21,
+            (unsigned long long) cpu->x22,
+            (unsigned long long) cpu->x23,
+            (unsigned long long) cpu->x24,
+            (unsigned long long) cpu->x25,
+            (unsigned long long) cpu->x26,
+            (unsigned long long) cpu->x27,
+            (unsigned long long) cpu->x30);
+
+    // HotSpot replay triage around libjvm+0x170aec path: dump key objects.
+    addr_t off = cpu->pc & 0xffffff;
+    if (off == 0x170aec || off == 0x170b50 || off == 0x170b58 ||
+            off == 0x170b64 || off == 0x170b70 || off == 0x170b74 ||
+            off == 0xe5aaec || off == 0xe5ab50 || off == 0xe5ab58 ||
+            off == 0xe5ab64 || off == 0xe5ab70 || off == 0xe5ab74) {
+        trace_dump_obj(cpu, "x19", cpu->x19);
+        trace_dump_obj(cpu, "x20", cpu->x20);
+        trace_dump_obj(cpu, "x1", cpu->x1);
+        trace_dump_obj(cpu, "x0", cpu->x0);
+    }
+
+    // Replay triage around the libjvm+0x80334c crash sequence (absolute low24
+    // around 0x4ed2xx/0x4ed3xx for this mmap layout): inspect the x26 object
+    // and the just-loaded x0 pointer chain.
+    if (off == 0x24f580 || off == 0x250400 || off == 0x250464 ||
+            off == 0x2504b0 || off == 0x2504fc || off == 0x250550 ||
+            off == 0x250564 || off == 0x25057c || off == 0x4ebad4 ||
+            off == 0x4ed15c || off == 0x4ed220 || off == 0x4ed230 ||
+            off == 0x4ed250 || off == 0x4ed344 || off == 0x4ed348) {
+        trace_dump_obj(cpu, "x24", cpu->x24);
+        trace_dump_obj(cpu, "x26", cpu->x26);
+        trace_dump_obj(cpu, "x0", cpu->x0);
+        if (off == 0x250400 || off == 0x250464 || off == 0x2504b0 ||
+                off == 0x2504fc || off == 0x250550 || off == 0x250564 ||
+                off == 0x25057c) {
+            uint32_t idx1 = 0, idx19 = 0, idx20 = 0, idx22 = 0;
+            bool ok_idx1 = trace_read_u32(cpu, cpu->x1 + 40, &idx1);
+            bool ok_idx19 = trace_read_u32(cpu, cpu->x19 + 40, &idx19);
+            bool ok_idx20 = trace_read_u32(cpu, cpu->x20 + 40, &idx20);
+            bool ok_idx22 = trace_read_u32(cpu, cpu->x22 + 40, &idx22);
+            fprintf(stderr,
+                    "TRACE566400 pc=%#llx x0=%#llx x1=%#llx(+40=%s%u) x19=%#llx(+40=%s%u) x20=%#llx(+40=%s%u) x22=%#llx(+40=%s%u) x2=%#llx x3=%#llx x4=%#llx\n",
+                    (unsigned long long) cpu->pc,
+                    (unsigned long long) cpu->x0,
+                    (unsigned long long) cpu->x1, ok_idx1 ? "" : "!", ok_idx1 ? idx1 : 0,
+                    (unsigned long long) cpu->x19, ok_idx19 ? "" : "!", ok_idx19 ? idx19 : 0,
+                    (unsigned long long) cpu->x20, ok_idx20 ? "" : "!", ok_idx20 ? idx20 : 0,
+                    (unsigned long long) cpu->x22, ok_idx22 ? "" : "!", ok_idx22 ? idx22 : 0,
+                    (unsigned long long) cpu->x2,
+                    (unsigned long long) cpu->x3,
+                    (unsigned long long) cpu->x4);
+            trace_dump_obj(cpu, "f566400_x1", cpu->x1);
+            trace_dump_obj(cpu, "f566400_x19", cpu->x19);
+            trace_dump_obj(cpu, "f566400_x20", cpu->x20);
+            trace_dump_obj(cpu, "f566400_x22", cpu->x22);
+        }
+
+        if (off == 0x24f580) {
+            uint32_t idx1 = 0, idx3 = 0;
+            bool ok_idx1 = trace_read_u32(cpu, cpu->x1 + 40, &idx1);
+            bool ok_idx3 = trace_read_u32(cpu, cpu->x3 + 40, &idx3);
+            fprintf(stderr,
+                    "TRACE565580 x1=%#llx +40=%s%u x3=%#llx +40=%s%u x4=%#llx\n",
+                    (unsigned long long) cpu->x1,
+                    ok_idx1 ? "" : "!", ok_idx1 ? idx1 : 0,
+                    (unsigned long long) cpu->x3,
+                    ok_idx3 ? "" : "!", ok_idx3 ? idx3 : 0,
+                    (unsigned long long) cpu->x4);
+            trace_dump_obj(cpu, "f565580_x1", cpu->x1);
+            trace_dump_obj(cpu, "f565580_x3", cpu->x3);
+        }
+
+        if (off == 0x4ebad4) {
+            uint32_t in_idx40 = 0;
+            bool ok_in_idx40 = trace_read_u32(cpu, cpu->x1 + 40, &in_idx40);
+            fprintf(stderr, "TRACECALL x1=%#llx +40=%s%u\n",
+                    (unsigned long long) cpu->x1,
+                    ok_in_idx40 ? "" : "!",
+                    ok_in_idx40 ? in_idx40 : 0);
+            trace_dump_obj(cpu, "call_x1", cpu->x1);
+        }
+
+        if (off == 0x4ed15c) {
+            uint32_t idx40 = 0;
+            bool ok_idx40 = trace_read_u32(cpu, cpu->x0 + 40, &idx40);
+            fprintf(stderr, "TRACERET x0=%#llx +40=%s%u\n",
+                    (unsigned long long) cpu->x0,
+                    ok_idx40 ? "" : "!",
+                    ok_idx40 ? idx40 : 0);
+        }
+
+        if (off == 0x4ed220) {
+            uint64_t t0 = 0, t1 = 0, t2 = 0;
+            bool ok0 = trace_read_u64(cpu, cpu->x0 + 0, &t0);
+            bool ok1 = trace_read_u64(cpu, cpu->x0 + 8, &t1);
+            bool ok2 = trace_read_u64(cpu, cpu->x0 + 16, &t2);
+            fprintf(stderr,
+                    "TRACEARR x0=%#llx [0]=%s%#llx [1]=%s%#llx [2]=%s%#llx\n",
+                    (unsigned long long) cpu->x0,
+                    ok0 ? "" : "!", (unsigned long long) t0,
+                    ok1 ? "" : "!", (unsigned long long) t1,
+                    ok2 ? "" : "!", (unsigned long long) t2);
+            if (ok0 && t0 != 0)
+                trace_dump_obj(cpu, "arr0", (addr_t) t0);
+            if (ok1 && t1 != 0)
+                trace_dump_obj(cpu, "arr1", (addr_t) t1);
+            if (ok2 && t2 != 0)
+                trace_dump_obj(cpu, "arr2", (addr_t) t2);
+        }
+    }
+
+    // Hash-slot replay triage around libjvm+0x34710c..+0x3471ec.
+    if (off == 0x3110c || off == 0x311e4 || off == 0x311e8 || off == 0x311ec) {
+        uint64_t slot_key = 0, table_ptr = 0;
+        uint32_t slot_index = 0;
+        bool ok_key = trace_read_u64(cpu, cpu->x5 + 928, &slot_key);
+        bool ok_idx = trace_read_u32(cpu, cpu->x5 + 936, &slot_index);
+        bool ok_tab = trace_read_u64(cpu, cpu->x0 + 912, &table_ptr);
+        fprintf(stderr,
+                "TRACESLOT pc=%#llx x0=%#llx x1=%#llx x5=%#llx slot_key=%s%#llx slot_idx=%s%u table=%s%#llx\n",
+                (unsigned long long) cpu->pc,
+                (unsigned long long) cpu->x0,
+                (unsigned long long) cpu->x1,
+                (unsigned long long) cpu->x5,
+                ok_key ? "" : "!", (unsigned long long) slot_key,
+                ok_idx ? "" : "!", ok_idx ? slot_index : 0,
+                ok_tab ? "" : "!", (unsigned long long) table_ptr);
+        if (ok_tab && table_ptr != 0) {
+            uint64_t e0 = 0, e1 = 0, e2 = 0;
+            bool ok_e0 = trace_read_u64(cpu, table_ptr + 0, &e0);
+            bool ok_e1 = trace_read_u64(cpu, table_ptr + 8, &e1);
+            bool ok_e2 = trace_read_u64(cpu, table_ptr + 16, &e2);
+            fprintf(stderr,
+                    "TRACESLOT entries base=%#llx [0]=%s%#llx [1]=%s%#llx [2]=%s%#llx\n",
+                    (unsigned long long) table_ptr,
+                    ok_e0 ? "" : "!", (unsigned long long) e0,
+                    ok_e1 ? "" : "!", (unsigned long long) e1,
+                    ok_e2 ? "" : "!", (unsigned long long) e2);
+            if (ok_e0 && e0 != 0)
+                trace_dump_obj(cpu, "slot_e0", (addr_t) e0);
+            if (ok_e1 && e1 != 0)
+                trace_dump_obj(cpu, "slot_e1", (addr_t) e1);
+            if (ok_e2 && e2 != 0)
+                trace_dump_obj(cpu, "slot_e2", (addr_t) e2);
+        }
+    }
+}
+void c_watch_write_hit(addr_t addr, const char *caller) { (void)addr; (void)caller; }
+void jit_watch_write_hit(struct cpu_state *cpu, addr_t store_addr, unsigned long *code_ptr) {
+    (void)cpu; (void)store_addr; (void)code_ptr;
+}
+void jit_highbit_alert(struct cpu_state *cpu) {
+    static int reported = 0;
+    if (reported++)
+        return;
+    fprintf(stderr, "HIGHBITS pc=%#llx sp=%#llx\n",
+            (unsigned long long)cpu->pc,
+            (unsigned long long)cpu->sp);
+    for (int i = 0; i < 31; i++) {
+        if ((cpu->regs[i] >> 32) != 0) {
+            fprintf(stderr, "  x%d=%#llx\n", i, (unsigned long long)cpu->regs[i]);
+        }
+    }
+}
 
 static void fiber_block_disconnect(struct asbestos *asbestos, struct fiber_block *block);
 static void fiber_block_free(struct asbestos *asbestos, struct fiber_block *block);
@@ -22,6 +421,9 @@ struct asbestos *asbestos_new(struct mmu *mmu) {
     list_init(&asbestos->jetsam);
     lock_init(&asbestos->lock);
     wrlock_init(&asbestos->jetsam_lock);
+    atomic_init(&asbestos->invalidate_gen, 0);
+    atomic_init(&asbestos->jit_active_threads, 0);
+    atomic_init(&asbestos->jetsam_gen, 0);
     return asbestos;
 }
 
@@ -47,6 +449,7 @@ static inline struct list *blocks_list(struct asbestos *asbestos, page_t page, i
 
 void asbestos_invalidate_range(struct asbestos *absestos, page_t start, page_t end) {
     lock(&absestos->lock);
+    bool did_invalidate = false;
     struct fiber_block *block, *tmp;
     for (page_t page = start; page < end; page++) {
         for (int i = 0; i <= 1; i++) {
@@ -57,17 +460,50 @@ void asbestos_invalidate_range(struct asbestos *absestos, page_t start, page_t e
                 fiber_block_disconnect(absestos, block);
                 block->is_jetsam = true;
                 list_add(&absestos->jetsam, &block->jetsam);
+                did_invalidate = true;
             }
         }
     }
+    if (did_invalidate)
+        atomic_fetch_add_explicit(&absestos->invalidate_gen, 1, memory_order_release);
     unlock(&absestos->lock);
 }
 
 void asbestos_invalidate_page(struct asbestos *asbestos, page_t page) {
+    // Fast path: skip lock if no blocks exist on this page.
+    // page_hash is only modified under asbestos->lock, and list_null is a
+    // single pointer read, so a racy false-negative just means we take
+    // the slow path unnecessarily (safe). A false-positive is impossible
+    // because blocks are always added before being linked into page_hash.
+    for (int i = 0; i <= 1; i++) {
+        struct list *blocks = blocks_list(asbestos, page, i);
+        if (!list_null(blocks))
+            goto slow_path;
+    }
+    return;
+slow_path:
     asbestos_invalidate_range(asbestos, page, page + 1);
 }
 void asbestos_invalidate_all(struct asbestos *asbestos) {
-    asbestos_invalidate_range(asbestos, 0, MEM_PAGES);
+    lock(&asbestos->lock);
+    bool did_invalidate = false;
+    struct fiber_block *block, *tmp;
+    for (size_t bucket = 0; bucket < FIBER_PAGE_HASH_SIZE; bucket++) {
+        for (int i = 0; i <= 1; i++) {
+            struct list *blocks = &asbestos->page_hash[bucket].blocks[i];
+            if (list_null(blocks))
+                continue;
+            list_for_each_entry_safe(blocks, block, tmp, page[i]) {
+                fiber_block_disconnect(asbestos, block);
+                block->is_jetsam = true;
+                list_add(&asbestos->jetsam, &block->jetsam);
+                did_invalidate = true;
+            }
+        }
+    }
+    if (did_invalidate)
+        atomic_fetch_add_explicit(&asbestos->invalidate_gen, 1, memory_order_release);
+    unlock(&asbestos->lock);
 }
 
 static void fiber_resize_hash(struct asbestos *asbestos, size_t new_size) {
@@ -144,7 +580,7 @@ static void fiber_block_disconnect(struct asbestos *asbestos, struct fiber_block
     }
     list_remove(&block->chain);
     for (int i = 0; i <= 1; i++) {
-        list_remove(&block->page[i]);
+        list_remove_safe(&block->page[i]);
         list_remove_safe(&block->jumps_from_links[i]);
 
         struct fiber_block *prev_block, *tmp;
@@ -170,24 +606,76 @@ static void fiber_free_jetsam(struct asbestos *asbestos) {
 }
 
 int fiber_enter(struct fiber_block *block, struct fiber_frame *frame, struct tlb *tlb);
+static int cpu_single_step(struct cpu_state *cpu, struct tlb *tlb);
 
 static inline size_t fiber_cache_hash(addr_t ip) {
-    return (ip ^ (ip >> 12)) % FIBER_CACHE_SIZE;
+    return (ip ^ (ip >> 12)) & (FIBER_CACHE_SIZE - 1);
+}
+
+static inline unsigned asbestos_invalidate_gen_load(struct asbestos *asbestos) {
+    return atomic_load_explicit(&asbestos->invalidate_gen, memory_order_acquire);
 }
 
 static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
     struct asbestos *asbestos = cpu->mmu->asbestos;
+
+    // Hold jetsam_lock read during JIT execution.
+    // This prevents jetsam cleanup from freeing blocks while we're executing them.
     read_wrlock(&asbestos->jetsam_lock);
 
-    struct fiber_block **cache = calloc(FIBER_CACHE_SIZE, sizeof(*cache));
-    struct fiber_frame *frame = malloc(sizeof(struct fiber_frame));
-    memset(frame, 0, sizeof(*frame));
+    // Use persistent block cache and frame from TLB; invalidate when blocks are jetsam'd.
+    unsigned invalidate_gen = asbestos_invalidate_gen_load(asbestos);
+    bool caches_stale = (tlb->block_cache_gen != invalidate_gen);
+    struct fiber_block **cache = tlb->block_cache;
+    if (caches_stale) {
+        memset(cache, 0, sizeof(tlb->block_cache));
+        tlb->block_cache_gen = invalidate_gen;
+    }
+
+    // Use persistent frame from TLB (avoids malloc/free + ret_cache zeroing)
+    struct fiber_frame *frame = tlb->frame;
+    if (frame == NULL) {
+        frame = calloc(1, sizeof(struct fiber_frame));
+        tlb->frame = frame;
+    } else if (caches_stale) {
+        // ret_cache holds pointers into block->code; must clear on invalidation
+        memset(frame->ret_cache, 0, sizeof(frame->ret_cache));
+    }
+    frame->last_block = NULL;
     frame->cpu = *cpu;
     assert(asbestos->mmu == cpu->mmu);
 
     int interrupt = INT_NONE;
+    int crash_retry_count = 0;
     while (interrupt == INT_NONE) {
-        addr_t ip = frame->cpu.eip;
+        // Check if blocks were invalidated since last check (e.g. CoW by another thread).
+        // This must be inside the loop, not just at function entry, because invalidation
+        // can happen while we're in the JIT cycle (between fiber_enter calls).
+        invalidate_gen = asbestos_invalidate_gen_load(asbestos);
+        if (tlb->block_cache_gen != invalidate_gen) {
+            memset(cache, 0, sizeof(tlb->block_cache));
+            tlb->block_cache_gen = invalidate_gen;
+            memset(frame->ret_cache, 0, sizeof(frame->ret_cache));
+            // Any last_block pointer may now refer to a jetsam'd/stale fiber.
+            // Drop it whenever invalidate_gen changes, just like other cache
+            // invalidation paths below.
+            frame->last_block = NULL;
+        }
+
+        addr_t ip = CPU_IP(&frame->cpu);
+        // Guard: null guest PC means corrupted state (e.g., branch to unmapped
+        // address 0). Return INT_GPF instead of trying to compile/execute.
+        if (ip == 0) {
+            frame->cpu.segfault_addr = 0;
+            interrupt = INT_GPF;
+            break;
+        }
+
+        // Optional tracepoint at block entry. This complements per-instruction
+        // trace gadgets and helps when a targeted PC only appears as a block
+        // entry (or when the matching instruction exits the block).
+        if (asbestos_should_trace_guest_pc(ip))
+            jit_trace_regs(&frame->cpu);
         size_t cache_index = fiber_cache_hash(ip);
         struct fiber_block *block = cache[cache_index];
         if (block == NULL || block->addr != ip) {
@@ -204,22 +692,23 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
         }
         struct fiber_block *last_block = frame->last_block;
         if (last_block != NULL &&
+                !last_block->is_jetsam && !block->is_jetsam &&
                 (last_block->jump_ip[0] != NULL ||
                  last_block->jump_ip[1] != NULL)) {
-            lock(&asbestos->lock);
-            // can't mint new pointers to a block that has been marked jetsam
-            // and is thus assumed to have no pointers left
-            if (!last_block->is_jetsam && !block->is_jetsam) {
-                for (int i = 0; i <= 1; i++) {
-                    if (last_block->jump_ip[i] != NULL &&
-                            (*last_block->jump_ip[i] & 0xffffffff) == block->addr) {
-                        *last_block->jump_ip[i] = (unsigned long) block->code;
-                        list_add(&block->jumps_from[i], &last_block->jumps_from_links[i]);
+            if (trylock(&asbestos->lock) == 0) {
+                // can't mint new pointers to a block that has been marked jetsam
+                // and is thus assumed to have no pointers left
+                if (!last_block->is_jetsam && !block->is_jetsam) {
+                    for (int i = 0; i <= 1; i++) {
+                        if (last_block->jump_ip[i] != NULL &&
+                                (*last_block->jump_ip[i] & 0xffffffff) == block->addr) {
+                            *last_block->jump_ip[i] = (unsigned long) block->code;
+                            list_add(&block->jumps_from[i], &last_block->jumps_from_links[i]);
+                        }
                     }
                 }
+                unlock(&asbestos->lock);
             }
-
-            unlock(&asbestos->lock);
         }
         frame->last_block = block;
 
@@ -228,23 +717,76 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
 
         TRACE("%d %08x --- cycle %ld\n", current_pid(), ip, frame->cpu.cycle);
 
-        interrupt = fiber_enter(block, frame, tlb);
-        if (interrupt == INT_NONE && __atomic_exchange_n(cpu->poked_ptr, false, __ATOMIC_SEQ_CST))
-            interrupt = INT_TIMER;
-        if (interrupt == INT_NONE && ++frame->cpu.cycle % (1 << 10) == 0)
-            interrupt = INT_TIMER;
-        *cpu = frame->cpu;
-    }
+        // Save a fallback block-start PC for crash recovery. Memory gadgets
+        // update frame->jit_saved_pc to the precise faultable instruction so
+        // host SIGSEGV/SIGBUS recovery does not re-run earlier side effects.
+        jit_saved_pc = frame->cpu.pc;
+        frame->jit_saved_pc = frame->cpu.pc;
 
-    free(frame);
-    free(cache);
+        in_jit = 1;
+        interrupt = fiber_enter(block, frame, tlb);
+        in_jit = 0;
+
+        // Check if fiber_enter returned due to a JIT crash (signal handler
+        // redirected PC to jit_crash_trampoline which returns INT_JIT_CRASH).
+        // The signal handler already set cpu->segfault_addr, cpu->pc, etc.
+        if (interrupt == INT_JIT_CRASH) {
+            // Flush all caches to get fresh host pointers.
+            tlb_flush(tlb);
+            memset(cache, 0, sizeof(tlb->block_cache));
+            tlb->block_cache_gen = asbestos_invalidate_gen_load(asbestos);
+            memset(frame->ret_cache, 0, sizeof(frame->ret_cache));
+            frame->last_block = NULL;
+
+            crash_retry_count++;
+            if (crash_retry_count >= 16) {
+                // Too many consecutive crashes — escalate to INT_GPF for handle_interrupt
+                interrupt = INT_GPF;
+                crash_retry_count = 0;
+            } else {
+                // Retry: convert to INT_NONE so the loop continues
+                interrupt = INT_NONE;
+            }
+        } else {
+            crash_retry_count = 0;
+        }
+
+        // Guest writes may modify code (HotSpot inline-cache/nmethod patching,
+        // JITs, trampolines). Drop compiled blocks for the last written page at
+        // block boundaries so later execution sees freshly translated bytes.
+        // tlb->dirty_page is page-aligned (not PAGE()-shifted).
+        if (tlb->dirty_page != TLB_PAGE_EMPTY) {
+            asbestos_invalidate_page(asbestos, PAGE(tlb->dirty_page));
+            tlb->dirty_page = TLB_PAGE_EMPTY;
+        }
+
+        // (debug trace removed)
+
+        // Check if page table changed (mmap/munmap by another thread) EVERY BLOCK.
+        if (tlb->mem_changes != __atomic_load_n(&tlb->mmu->changes, __ATOMIC_ACQUIRE)) {
+            tlb_flush(tlb);
+            memset(cache, 0, sizeof(tlb->block_cache));
+            tlb->block_cache_gen = asbestos_invalidate_gen_load(asbestos);
+            memset(frame->ret_cache, 0, sizeof(frame->ret_cache));
+            frame->last_block = NULL;
+        }
+
+        if (interrupt == INT_NONE && __atomic_exchange_n(frame->cpu.poked_ptr, false, __ATOMIC_ACQUIRE))
+            interrupt = INT_TIMER;
+        if (interrupt == INT_NONE && (++frame->cpu.cycle & ((1 << 10) - 1)) == 0)
+            interrupt = INT_TIMER;
+    }
+    *cpu = frame->cpu;
+
+    // Release jetsam_lock read. Jetsam cleanup can now proceed.
     read_wrunlock(&asbestos->jetsam_lock);
+
     return interrupt;
 }
 
 static int cpu_single_step(struct cpu_state *cpu, struct tlb *tlb) {
     struct gen_state state;
-    gen_start(cpu->eip, &state);
+    gen_start(CPU_IP(cpu), &state);
     gen_step(&state, tlb);
     gen_exit(&state);
     gen_end(&state);
@@ -260,25 +802,42 @@ static int cpu_single_step(struct cpu_state *cpu, struct tlb *tlb) {
 }
 
 int cpu_run_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
+    ish_thread_marker = 1;
     if (cpu->poked_ptr == NULL)
         cpu->poked_ptr = &cpu->_poked;
-    tlb_refresh(tlb, cpu->mmu);
-    int interrupt = (cpu->tf ? cpu_single_step : cpu_step_to_interrupt)(cpu, tlb);
-    cpu->trapno = interrupt;
-
+#ifdef GUEST_ARM64
+    // NOTE: Do NOT invalidate exclusive monitor here.
+    // This function is called once, but the inner loop (cpu_step_to_interrupt)
+    // calls fiber_enter repeatedly. The LDXR/STXR pair may span multiple
+    // fiber_enter calls (unchained blocks). Invalidating here would break
+    // LDXR/STXR atomicity across block boundaries.
+    // The exclusive monitor is invalidated by STXR itself (success or fail)
+    // and by context switches / signal delivery.
+#endif
     struct asbestos *asbestos = cpu->mmu->asbestos;
+    __atomic_add_fetch(&asbestos->active_threads, 1, __ATOMIC_RELAXED);
+    tlb_refresh(tlb, cpu->mmu);
+    int interrupt = (CPU_HAS_SINGLE_STEP ? cpu_single_step : cpu_step_to_interrupt)(cpu, tlb);
+    cpu->trapno = interrupt;
+    __atomic_sub_fetch(&asbestos->active_threads, 1, __ATOMIC_RELAXED);
+
     lock(&asbestos->lock);
     if (!list_empty(&asbestos->jetsam)) {
-        // write-lock the jetsam_lock to wait until other asbestos threads get
-        // to this point, so they will all clear out their block pointers
-        // TODO: use RCU for better performance
         unlock(&asbestos->lock);
-        write_wrlock(&asbestos->jetsam_lock);
-        lock(&asbestos->lock);
-        fiber_free_jetsam(asbestos);
-        write_wrunlock(&asbestos->jetsam_lock);
+
+        // This runs while task_run_current still holds mem->lock for reading.
+        // Do not block here: a concurrent page-fault handler may be queued for
+        // mem->lock write, which makes new/read re-entry block on glibc's
+        // writer-preferred rwlock and can deadlock with JIT fault retry.
+        if (write_wrtrylock(&asbestos->jetsam_lock)) {
+            lock(&asbestos->lock);
+            fiber_free_jetsam(asbestos);
+            unlock(&asbestos->lock);
+            write_wrunlock(&asbestos->jetsam_lock);
+        }
+    } else {
+        unlock(&asbestos->lock);
     }
-    unlock(&asbestos->lock);
 
     return interrupt;
 }

@@ -59,11 +59,75 @@ ish_test!(echo_hello, |ish| {
         .spawn(SpawnOpts::cmd(["/bin/echo", "hello"]))
         .expect("spawn");
     let (code, output) = drain(&session, 2_000).await;
-    assert_eq!(code, Some(0), "echo should exit 0; got output={:?}", String::from_utf8_lossy(&output));
+    assert_eq!(
+        code,
+        Some(0),
+        "echo should exit 0; got output={:?}",
+        String::from_utf8_lossy(&output)
+    );
     assert!(
         String::from_utf8_lossy(&output).contains("hello"),
         "expected 'hello' in output, got: {:?}",
         String::from_utf8_lossy(&output),
+    );
+});
+
+ish_test!(procfs_is_mounted, |ish| {
+    let session = ish
+        .spawn(SpawnOpts::cmd([
+            "/bin/sh",
+            "-lc",
+            "test -r /proc/mounts && \
+             grep -q '^proc /proc proc ' /proc/mounts && \
+             test -r /proc/self/stat && \
+             test -r /proc/self/cmdline && \
+             test -n \"$(readlink /proc/self/exe)\" && \
+             ls /proc/self/fd >/dev/null",
+        ]))
+        .expect("spawn");
+    let (code, output) = drain(&session, 2_000).await;
+    assert_eq!(
+        code,
+        Some(0),
+        "procfs smoke should exit 0; got output={:?}",
+        String::from_utf8_lossy(&output),
+    );
+});
+
+ish_test!(stdout_streams_before_exit, |ish| {
+    let session = ish
+        .spawn(SpawnOpts::cmd([
+            "/bin/sh",
+            "-lc",
+            "/bin/echo first; sleep 2; /bin/echo second",
+        ]))
+        .expect("spawn");
+
+    let first = session
+        .read(Some(0), Some(64 * 1024), Some(1_500))
+        .await
+        .expect("read first chunk");
+    let first_text: String = first
+        .chunks
+        .iter()
+        .flat_map(|c| c.bytes.iter().copied())
+        .map(|b| b as char)
+        .collect();
+    assert!(
+        first_text.contains("first"),
+        "expected first chunk before exit, got {first_text:?}"
+    );
+    assert!(
+        !first.closed,
+        "session should still be open after first streamed chunk"
+    );
+
+    let (code, output) = drain(&session, 4_000).await;
+    let text = String::from_utf8_lossy(&output);
+    assert_eq!(code, Some(0), "stream smoke failed, output={text:?}");
+    assert!(
+        text.contains("second"),
+        "expected final chunk, got {text:?}"
     );
 });
 
@@ -75,7 +139,11 @@ async fn drain(session: &ish_embed_host::IshSession, total_ms: u64) -> (Option<i
     let mut out = Vec::new();
     loop {
         let now = std::time::Instant::now();
-        let remaining = if now >= deadline { 0 } else { (deadline - now).as_millis() as u64 };
+        let remaining = if now >= deadline {
+            0
+        } else {
+            (deadline - now).as_millis() as u64
+        };
         let r = session
             .read(Some(next_seq), Some(64 * 1024), Some(remaining))
             .await
@@ -94,9 +162,7 @@ async fn drain(session: &ish_embed_host::IshSession, total_ms: u64) -> (Option<i
 }
 
 ish_test!(false_returns_nonzero, |ish| {
-    let session = ish
-        .spawn(SpawnOpts::cmd(["/bin/false"]))
-        .expect("spawn");
+    let session = ish.spawn(SpawnOpts::cmd(["/bin/false"])).expect("spawn");
     // Drain to completion.
     let mut next_seq: u64 = 0;
     let mut out = Vec::new();
@@ -116,7 +182,12 @@ ish_test!(false_returns_nonzero, |ish| {
             break r.exit_code.unwrap_or(-1);
         }
     };
-    assert_eq!(exit_code, 1, "false should exit 1, output={:?}", String::from_utf8_lossy(&out));
+    assert_eq!(
+        exit_code,
+        1,
+        "false should exit 1, output={:?}",
+        String::from_utf8_lossy(&out)
+    );
 });
 
 ish_test!(stdin_pipe_roundtrip, |ish| {
@@ -124,8 +195,8 @@ ish_test!(stdin_pipe_roundtrip, |ish| {
         .spawn(SpawnOpts {
             argv: vec!["/bin/cat".into()],
             envp: None,
-            cwd:  None,
-            tty:  false,
+            cwd: None,
+            tty: false,
             pipe_stdin: true,
             arg0: None,
         })
@@ -137,12 +208,20 @@ ish_test!(stdin_pipe_roundtrip, |ish| {
     // sending SIGTERM after a moment.
     tokio::time::sleep(Duration::from_millis(200)).await;
     session.terminate().await.expect("terminate");
-    let r = session.read(Some(0), Some(64 * 1024), Some(2_000)).await.expect("read");
-    let combined: String = r.chunks.iter()
+    let r = session
+        .read(Some(0), Some(64 * 1024), Some(2_000))
+        .await
+        .expect("read");
+    let combined: String = r
+        .chunks
+        .iter()
         .flat_map(|c| c.bytes.iter().copied())
         .map(|b| b as char)
         .collect();
-    assert!(combined.contains("ping"), "expected 'ping' in output, got: {combined:?}");
+    assert!(
+        combined.contains("ping"),
+        "expected 'ping' in output, got: {combined:?}"
+    );
 });
 
 ish_test!(concurrent_three_sessions, |ish| {
@@ -159,30 +238,51 @@ ish_test!(concurrent_three_sessions, |ish| {
     for s in handles {
         let mut next_seq: u64 = 0;
         let code = loop {
-            let r = s.read(Some(next_seq), Some(64 * 1024), Some(3_000))
+            let r = s
+                .read(Some(next_seq), Some(64 * 1024), Some(3_000))
                 .await
                 .expect("read");
-            for c in &r.chunks { next_seq = c.seq; }
-            if r.exited && r.chunks.is_empty() { break r.exit_code; }
-            if r.closed { break r.exit_code; }
+            for c in &r.chunks {
+                next_seq = c.seq;
+            }
+            if r.exited && r.chunks.is_empty() {
+                break r.exit_code;
+            }
+            if r.closed {
+                break r.exit_code;
+            }
         };
         codes.push(code);
     }
     let elapsed = start.elapsed();
-    assert!(elapsed < Duration::from_secs(2), "wall time {:?} not concurrent enough", elapsed);
-    assert!(codes.iter().all(|c| *c == Some(0)), "all should exit 0; got {codes:?}");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "wall time {:?} not concurrent enough",
+        elapsed
+    );
+    assert!(
+        codes.iter().all(|c| *c == Some(0)),
+        "all should exit 0; got {codes:?}"
+    );
 });
 
 ish_test!(cancel_hung_command, |ish| {
     let s = ish
-        .spawn(SpawnOpts::cmd(["/bin/sh", "-c", "while :; do sleep 1; done"]))
+        .spawn(SpawnOpts::cmd([
+            "/bin/sh",
+            "-c",
+            "while :; do sleep 1; done",
+        ]))
         .expect("spawn");
     // Let it start.
     let _ = s.read(Some(0), Some(0), Some(300)).await;
     let start = std::time::Instant::now();
     s.terminate().await.expect("terminate");
     // Wait for Exited.
-    let r = s.read(Some(0), Some(64 * 1024), Some(2_000)).await.expect("read after terminate");
+    let r = s
+        .read(Some(0), Some(64 * 1024), Some(2_000))
+        .await
+        .expect("read after terminate");
     assert!(start.elapsed() < Duration::from_secs(1));
     assert!(r.exited, "should be exited");
     // SIGKILL = 9.

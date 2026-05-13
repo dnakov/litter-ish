@@ -1,15 +1,12 @@
-build-host/
-build-ios-device/
-build-ios-sim-arm64/
-build-ios-sim-x86_64/
 build/
-embed/tests/ios_app/LitterISHSanity.xcodeproj/
-build/
+build-*/
+embed/target/
 xcuserdata/
 .floo
 
 cross-*.txt
 root.tar.gz
+alpine-*-fakefs/
 
 node_modules
 app/xtermjs/xterm-dist
@@ -25,5 +22,5 @@ fastlane/test_output
 
 e2e_out/
 
-crates/*/target/
-crates/*/Cargo.lock
+# Legacy bench scripts (replaced by benchmark/)
+bench/

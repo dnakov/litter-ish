@@ -13,10 +13,10 @@ jobs:
         cc: [clang, gcc]
         kernel: [ish, linux]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
         with:
             submodules: true
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v6
         with:
             python-version: '3.x'
       - name: Install dependencies
@@ -43,7 +43,7 @@ jobs:
       matrix:
         kernel: [ish, linux]
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
         with:
             submodules: true
       - name: Install dependencies
@@ -57,12 +57,12 @@ jobs:
         run: xcodebuild -project iSH.xcodeproj -scheme iSH -arch arm64 -sdk iphoneos CODE_SIGNING_ALLOWED=NO
       - name: Build
         if: matrix.kernel == 'linux'
-        run: xcodebuild -project iSH.xcodeproj -scheme iSH+Linux -arch x86_64 -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO
+        run: xcodebuild -project iSH.xcodeproj -scheme iSH+Linux -arch arm64 -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO
 
   build-embed-rust:
     # Tests the new ish-embed-{protocol,supervisor,host} Cargo workspace.
     # Runs on macOS so the `IshInstance::boot` smoke tests can exercise
-    # the kernel against a real fakefs (cross-builds the i386 supervisor
+    # the kernel against a real fakefs (cross-builds the AArch64 supervisor
     # via rust-lld which ships with rustup).
     runs-on: macos-15
     steps:
@@ -71,8 +71,8 @@ jobs:
           submodules: true
       - name: Install host build deps
         run: brew install meson ninja sqlite llvm lld libarchive
-      - name: Install i686 musl Rust target
-        run: rustup target add i686-unknown-linux-musl
+      - name: Install AArch64 musl Rust target
+        run: rustup target add aarch64-unknown-linux-musl
       - name: Build a dev fakefs
         run: ./embed/build-rootfs.sh
       - name: Protocol unit tests

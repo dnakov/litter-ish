@@ -1,3 +1,5 @@
+#include <time.h>
+#include <stddef.h>
 #include "debug.h"
 #include "kernel/task.h"
 #include "fs/fd.h"
@@ -5,6 +7,15 @@
 #include "fs/tty.h"
 #include "kernel/mm.h"
 #include "kernel/ptrace.h"
+
+// Architecture-specific register access for fork/clone
+#if defined(GUEST_ARM64)
+#define CPU_SP(cpu) ((cpu).sp)
+#define CPU_RETVAL(cpu) ((cpu).regs[0])
+#else
+#define CPU_SP(cpu) ((cpu).esp)
+#define CPU_RETVAL(cpu) ((cpu).eax)
+#endif
 
 #define CSIGNAL_ 0x000000ff
 #define CLONE_VM_ 0x00000100
@@ -47,6 +58,13 @@ static struct tgroup *tgroup_copy(struct tgroup *old_group) {
     group->itimer = NULL;
     group->doing_group_exit = false;
     group->children_rusage = (struct rusage_) {};
+    {
+        struct timespec _ts;
+        clock_gettime(CLOCK_MONOTONIC, &_ts);
+        atomic_store_explicit(&group->last_progress_ns,
+            (uint64_t)_ts.tv_sec * 1000000000ULL + _ts.tv_nsec,
+            memory_order_relaxed);
+    }
     cond_init(&group->child_exit);
     cond_init(&group->stopped_cond);
     lock_init(&group->lock);
@@ -56,7 +74,7 @@ static struct tgroup *tgroup_copy(struct tgroup *old_group) {
 static int copy_task(struct task *task, dword_t flags, addr_t stack, addr_t ptid_addr, addr_t tls_addr, addr_t ctid_addr) {
     task->vfork = NULL;
     if (stack != 0)
-        task->cpu.esp = stack;
+        CPU_SP(task->cpu) = stack;
 
     int err;
     struct mm *mm = task->mm;
@@ -93,6 +111,14 @@ static int copy_task(struct task *task, dword_t flags, addr_t stack, addr_t ptid
             goto fail_free_fs;
     }
 
+    // Linux keeps sigaltstack state per thread. fork-style children inherit the
+    // parent's alternate stack, but clone(CLONE_VM) children (normal pthreads,
+    // including Go M threads) start with it disabled unless CLONE_VFORK is used.
+    if ((flags & CLONE_VM_) && !(flags & CLONE_VFORK_)) {
+        task->altstack = 0;
+        task->altstack_size = 0;
+    }
+
     struct tgroup *old_group = task->group;
     lock(&pids_lock);
     lock(&old_group->lock);
@@ -106,9 +132,15 @@ static int copy_task(struct task *task, dword_t flags, addr_t stack, addr_t ptid
     unlock(&pids_lock);
 
     if (flags & CLONE_SETTLS_) {
+#if defined(GUEST_ARM64)
+        // On ARM64, the TLS argument is the actual TLS pointer value (for TPIDR_EL0),
+        // not a pointer to a descriptor structure like x86.
+        task->cpu.tls_ptr = tls_addr;
+#else
         err = task_set_thread_area(task, tls_addr);
         if (err < 0)
             goto fail_free_sighand;
+#endif
     }
 
     err = _EFAULT;
@@ -161,7 +193,7 @@ dword_t sys_clone(dword_t flags, addr_t stack, addr_t ptid, addr_t tls, addr_t c
         unlock(&pids_lock);
         return err;
     }
-    task->cpu.eax = 0;
+    CPU_RETVAL(task->cpu) = 0;
 
     struct vfork_info vfork;
     if (flags & CLONE_VFORK_) {
@@ -194,6 +226,45 @@ dword_t sys_clone(dword_t flags, addr_t stack, addr_t ptid, addr_t tls, addr_t c
     }
 
     return pid;
+}
+
+struct clone_args_ {
+    qword_t flags;
+    qword_t pidfd;
+    qword_t child_tid;
+    qword_t parent_tid;
+    qword_t exit_signal;
+    qword_t stack;
+    qword_t stack_size;
+    qword_t tls;
+    qword_t set_tid;
+    qword_t set_tid_size;
+    qword_t cgroup;
+};
+
+dword_t sys_clone3(addr_t args_addr, size_t size) {
+    STRACE("clone3(%#llx, %llu)", (unsigned long long)args_addr, (unsigned long long)size);
+
+    if (size < offsetof(struct clone_args_, exit_signal) + sizeof(qword_t))
+        return _EINVAL;
+    if (size > sizeof(struct clone_args_))
+        size = sizeof(struct clone_args_);
+
+    struct clone_args_ args = {};
+    if (user_read(args_addr, &args, size))
+        return _EFAULT;
+
+    if (args.pidfd != 0 || args.set_tid != 0 || args.set_tid_size != 0 || args.cgroup != 0)
+        return _EINVAL;
+    if (args.exit_signal & ~0xffULL)
+        return _EINVAL;
+
+    addr_t stack = (addr_t) args.stack;
+    if (args.stack_size != 0)
+        stack += (addr_t) args.stack_size;
+
+    dword_t flags = (dword_t) args.flags | (dword_t) args.exit_signal;
+    return sys_clone(flags, stack, (addr_t) args.parent_tid, (addr_t) args.tls, (addr_t) args.child_tid);
 }
 
 dword_t sys_fork() {

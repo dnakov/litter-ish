@@ -22,6 +22,11 @@ int ish_ffi_mount_fakefs(const char *rootfs_path);
 // Must be called once per process; iSH's kernel state is process-global.
 int ish_ffi_become_init(void);
 
+// Mount synthetic kernel filesystems inside the guest rootfs. Must be called
+// after ish_ffi_become_init() so path lookups have a current task.
+int ish_ffi_mount_procfs(void);
+int ish_ffi_mount_devpts(void);
+
 // Install three host-owned fds as the init task's stdin (in_rd), stdout
 // (out_wr_a), and stderr (out_wr_b). After return, the kernel owns these
 // fds and will close them on task exit; the host must NOT close them.

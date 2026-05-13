@@ -1,0 +1,291 @@
+# iSH ARM64 — 通过原生 threaded-code 解释器在 iOS 上运行 Linux
+
+**Fork 自 [ish-app/ish](https://github.com/ish-app/ish)** — iOS 上的用户态 Linux 模拟器。
+
+本 fork 在上游 iSH 的 threaded-code 解释器（**Asbestos**，2024 年之前叫 *jit*，上游重命名是因为
+它本来就不是真正的 JIT）之上**新增了 ARM64 guest 后端**，在 Apple Silicon 上模拟 AArch64 Linux，
+与原版 x86 (i386) guest 后端并存。结果是一个性能和兼容性大幅提升的 Linux 环境，
+能在 iPhone / iPad 上直接运行 **Python、Node.js、Go、Rust 和原生 CLI 工具**。
+
+> ## 🚢 生产环境使用
+>
+> 本引擎已在 **[OpenMinis](https://openminis.app)** 中作为 **Agent Shell Sandbox** 投入使用，
+> 经过 **10,000+ 用户**在 iOS 上稳定运行 Linux 工具和 shell 负载的真实检验。README 中的性能
+> 数据和稳定性声明均来自这个真实线上部署，而不仅仅是合成基准测试。
+
+> **命名说明**：*Asbestos* 是上游项目给自家 threaded-code 解释器起的名字（见上游 commit
+> [`d375656f` "Rename the JIT"](https://github.com/ish-app/ish/commit/d375656f)，2024 年 6 月）。
+> 它**不是 JIT** —— Asbestos 及其前身都不会在运行时生成机器码，而是为每个基本块构造一个
+> 指针数组（指向预编译的原生 gadget 函数），各 gadget 通过尾调用衔接（Forth 解释器采用的技术）。
+>
+> 本 fork 所做的是在这个 Asbestos 框架里**新增一个 ARM64 guest 后端**：
+> 新的 gadget（`asbestos/guest-arm64/gadgets-aarch64/`）把 AArch64 guest 指令映射到若干条
+> ARM64 host 指令——同架构分派，每条 guest 指令只需几条 host 指令。上游 x86 后端依然并存。
+> 下文部分地方用 "JIT" 作为简写，请理解为"同架构 gadget 分派"，而非运行时代码生成。
+>
+> 英文版: [README_arm64.md](README_arm64.md)
+
+---
+
+## 为什么要做 ARM64 版本？
+
+原始 iSH 在 ARM64 主机上翻译 **x86 (i386) 指令** — 每条 guest 指令都要跨架构解码和模拟。
+这对简单工具还行，但有根本限制：
+
+| 限制 | x86（原版） | ARM64（本 fork） |
+|---|---|---|
+| 架构翻译 | i386 → ARM64（跨架构） | AArch64 → AArch64（同架构） |
+| 地址空间 | 32-bit (4 GB) | 48-bit (256 TB) |
+| SIMD | 部分 SSE/SSE2 | 完整 NEON + Crypto |
+| Node.js / V8 | 无法运行（需要 >4 GB 虚拟地址） | 支持 |
+| Go / Rust | 无法运行（需要大虚拟地址） | 支持 |
+| 计算开销 | 相对原生 15-100x | 相对原生 3-30x |
+
+## 架构总览
+
+```
++--------------------------------------------------------------+
+|  iOS App (iSH ARM64)                                         |
+|                                                              |
+|  +--------------------------------------------------------+  |
+|  |  Asbestos (threaded-code 解释器)                       |  |
+|  |                                                        |  |
+|  |   Decoder  -->  Gadget program  -->  Fiber Blocks      |  |
+|  |   (gen.c)       builder              (block cache)     |  |
+|  |                                                        |  |
+|  |   --- 48-bit 虚拟内存 (4 级页表) ---                    |  |
+|  |       TLB (8192 项) + CoW + 惰性预留                   |  |
+|  +--------------------------------------------------------+  |
+|                                                              |
+|  +-------------------+    +-------------------------------+  |
+|  |  Linux 内核       |    |  Agent 集成                   |  |
+|  |  (syscalls,       |    |  - Embed host API             |  |
+|  |   signals,        |    |  - Native Offload             |  |
+|  |   futex, epoll)   |    |  - Bind Mounts                |  |
+|  +-------------------+    |  - RootfsPatch overlay        |  |
+|                           +-------------------------------+  |
+|  +-------------------+                                       |
+|  |  文件系统         |                                       |
+|  |  fakefs + realfs  |                                       |
+|  |  + bind mounts    |                                       |
+|  +-------------------+                                       |
++--------------------------------------------------------------+
+```
+
+---
+
+## 相对上游的主要增强
+
+### 1. Asbestos 框架内的 ARM64 guest 后端
+
+本 fork 的主要贡献。在上游既有的 Asbestos threaded-code 解释器里接入一个 ARM64 guest 后端，
+改写了每条指令的成本模型：每个 guest 基本块被编译成一个 **gadget 程序** —— 一个
+`unsigned long` 数组，交替存放预编译 ARM64 gadget 函数指针和内联操作数。执行流程是一串尾调用 ——
+每个 gadget 从程序流读取下一条指针并 `br` 跳过去。**不分配可执行内存，不在运行时生成任何机器码**。
+每条 guest 指令的 host 指令开销就是对应 gadget 中的几条 ARM64 指令。
+
+**关键文件:**
+- `asbestos/asbestos.c` — 块缓存、块管理、RCU 风格的 jetsam 清理
+- `asbestos/guest-arm64/gen.c` — 指令解码器 + gadget 程序构建（200+ 指令）
+- `asbestos/guest-arm64/gadgets-aarch64/` — 手写 ARM64 汇编 gadget:
+  - `entry.S` — fiber_enter/exit、崩溃恢复 trampoline
+  - `memory.S` — 内联 TLB 查找的 load/store（快路径约 12 条指令）
+  - `control.S` — 分支、条件、融合 compare-and-branch
+  - `math.S` — 算术、移位、位操作、NEON/SIMD
+  - `crypto.S` — AES、SHA、CRC32 指令
+
+**设计亮点:**
+- **块链接**: 顺序基本块直接链接，跳过 dispatch 开销
+- **持久 TLB**: 8192 项 TLB 跨 syscall 保留（不会每次进出 gadget 分派都刷）
+- **崩溃恢复**: gadget 中 SIGSEGV 重定向到 trampoline 进行 CoW 处理
+- **完整 NEON**: 所有 128-bit SIMD 操作，含加密扩展
+
+### 2. 48-bit 虚拟地址空间
+
+4 级页表（L0→L1→L2→L3，每级 9 bit = 36-bit 页号 + 12-bit 偏移 = 48-bit）。
+
+- 支持 V8 的 128GB+ 指针笼（通过 `MAP_NORESERVE` 惰性预留）
+- Go 对堆栈的大虚拟地址需求
+- `0x0-0x100000` 的守护页防止 V8 compressed pointer 崩溃
+- 布局保持紧凑（stack `0xffffe000`，mmap `0xefffd`）以提高 TLB 效率
+
+**关键文件:** `kernel/memory.h`、`kernel/memory.c`、`emu/tlb.h`
+
+### 3. Node.js / V8 支持
+
+在用户态模拟器上跑 Node.js 需要解决多个 V8 特有问题：
+
+- **128GB MAP_NORESERVE**: 不占物理内存的惰性地址预留
+- **0x0-0x100000 守护页**: V8 compressed pointer 会解引用小整数 —
+  把低 1MB 映射成可读的零页能避免 SIGSEGV
+- **V8 二进制补丁**: 在代码 cave 中植入 9 条指令修复 `InterpreterEntryTrampoline`
+  派生构造函数 bug（零模拟器开销）
+- **`--jitless --no-lazy`**: V8 启动 flag，避开 Wasm 编译和懒解析问题
+- **退出清理**: V8 线程卡死时的 safety valve
+
+**效果**: `npm install`、`npm exec`、`npx`、`create-next-app` 全部可用。
+
+### 4. Runtime 集成
+
+#### Native Offload（`kernel/native_offload.c`）
+
+完全绕过模拟，对注册的二进制直接由原生处理。guest 的 `execve()` 被拦截并路由到
+原生 handler 或 host 二进制：
+
+```c
+// 注册 handler（启动时调用一次）
+native_offload_add_handler("ffmpeg", ffmpeg_main);
+
+// 现在 guest 的 `ffmpeg -i input.mp4 output.mp3` 会原生执行
+// 参数中的 guest 路径自动转换为 host 路径
+```
+
+同时支持进程内 handler（iOS + macOS）和通过 `posix_spawn` 的委托（macOS CLI）。
+
+#### Bind Mounts（`fs/fake.c`）
+
+把 host 目录挂载到 guest 文件系统：
+
+```c
+// 只读 bind mount host 目录
+fakefs_bind_mount("/host/path/to/data", "/mnt/data", /*read_only=*/true);
+```
+
+让 AI agent 能在 host app 与 Linux guest 之间共享文件而无需复制。
+
+### 5. Rootfs 管理
+
+- **Alpine 3.21 aarch64**，自带完整 apk 包管理器
+- **RootfsPatch.bundle**: 增量 rootfs 更新的版本化 overlay 系统
+- **Polyfills**: undici/llhttp 的 WebAssembly polyfill、HTTP 下载的 fetch polyfill
+- **OPENSSL_armcap=0** 和 **GODEBUG/GOMAXPROCS** 在 `sys_execve` 中注入
+
+---
+
+## 构建配置
+
+| Target | Scheme | xcconfig | Guest Arch | Bundle ID 后缀 |
+|--------|--------|----------|------------|------------------|
+| x86（原版） | iSH | `App.xcconfig` | i386 | — |
+| ARM64 | iSH-ARM64 | `AppARM64.xcconfig` | aarch64 | `.arm64` |
+| ARM64 + FFmpeg | iSH-ARM64-ffmpeg | `AppARM64-ffmpeg.xcconfig` | aarch64 | `.arm64` |
+
+ARM64 target 直接链接 `build-arm64-release/` 中 meson 构建的库
+（`libish.a`、`libish_emu.a`、`libfakefs.a`），避免 Xcode 自动发现 x86 的 library target。
+
+```bash
+# 构建 ARM64 CLI（macOS，测试用）
+meson setup build-arm64-release --buildtype=release
+ninja -C build-arm64-release
+
+# 运行
+./build-arm64-release/ish -f ./alpine-arm64-fakefs /bin/sh
+```
+
+---
+
+## 工作负载验证
+
+这个树现在只支持 ARM64。活动测试位于 `tests/arm64/`，当前验证记录位于：
+
+- `docs/ARM64_WORKLOAD_SMOKE_TESTS.md`
+- `docs/ARM64_SMOKE_ISSUES_AND_SYSCALL_COVERAGE.md`
+- `tests/arm64/runtime-coverage.sh`
+
+嵌入式 Litter 验收测试是 `embed/host/tests/acceptance.rs`，它会启动 aarch64 Alpine
+fakefs，并验证 `/bin/sh`、Python、Node/npm、Go，以及一个基本的 Cargo/Rust 工作负载。
+
+---
+
+## 支持的软件
+
+### 完全可用
+
+| 类别 | 示例 |
+|------|------|
+| **包管理器** | apk、pip、npm、npx、uv |
+| **语言** | Python 3、Node.js 22、Go、Perl、Ruby、Lua |
+| **开发工具** | git、curl、wget、ssh、vim、nano |
+| **构建工具** | gcc、g++、cmake、make、meson |
+| **数据工具** | sqlite3、jq、yt-dlp、ffmpeg（通过 native offload） |
+| **网络** | curl、wget、dig、netstat、ss |
+| **Node 框架** | Express、Koa、Fastify、Axios、Socket.io |
+| **npm 生态** | lodash、moment、dayjs、uuid、chalk、commander、glob、semver |
+
+### 不支持
+
+- **GUI 应用**（无 X11/Wayland）
+- **Docker / 容器**（无内核命名空间支持）
+- **内核模块**（用户态模拟器）
+- **硬件访问**（无 /dev/gpu、无 USB 透传）
+
+---
+
+## 提交历史
+
+该 ARM64 bring-up 分支在上游 iSH 基础上持续累积修复；提交数和 diffstat 会随着生产审计和文档整理变化，下面列表作为稳定的里程碑索引。
+
+主要里程碑:
+1. **解释器基础**: fiber_enter/exit、基本块编译（到 gadget 程序）、TLB
+2. **指令覆盖**: 200+ ARM64 指令含完整 NEON/Crypto
+3. **48-bit 地址空间**: 4 级页表、惰性预留
+4. **Node.js 支持**: V8 守护页、MAP_NORESERVE、二进制补丁、退出清理
+5. **Go 支持**: 信号帧对齐、sigreturn 修复、NZCV 保留
+6. **Rust/uv 支持**: FUTEX_WAIT_BITSET、PMULL、BFM、按需映射读取
+7. **Runtime 集成**: embed host API、Native Offload、Bind Mounts、RootfsPatch overlay
+8. **稳定性**: 50+ 个 bug 修复（并发、内存泄漏、use-after-free、死锁）
+
+---
+
+## 工程结构
+
+```
+iSH/
+├── asbestos/                    # ARM64 threaded-code 解释器
+│   ├── asbestos.c/h             # 块缓存、RCU 清理
+│   └── guest-arm64/
+│       ├── gen.c                # 指令解码器 → gadgets
+│       ├── crypto_helpers.c     # AES/SHA/CRC32 helpers
+│       └── gadgets-aarch64/     # 汇编 gadgets
+│           ├── entry.S          # Fiber 入口/退出、崩溃 handler
+│           ├── memory.S         # Load/store、TLB 内联查找
+│           ├── control.S        # 分支、条件
+│           ├── math.S           # ALU、移位、NEON/SIMD
+│           ├── crypto.S         # AES、SHA、PMULL、CRC32
+│           ├── bits.S           # 位域操作
+│           └── gadgets.h        # 寄存器映射、TLB 宏
+├── emu/
+│   ├── tlb.c/h                  # TLB miss 处理、跨页
+│   └── arch/arm64/
+│       ├── cpu.h                # CPU 状态（寄存器、NEON、flags）
+│       └── decode.h             # 指令字段提取
+├── kernel/
+│   ├── arch/arm64/calls.c       # ARM64 syscall 表
+│   ├── memory.c/h               # 页表、CoW、缺页
+│   ├── mmap.c                   # mmap、惰性预留
+│   ├── native_offload.c/h       # 二进制 offload 系统
+│   ├── signal.c/h               # 信号投递/帧
+│   ├── futex.c                  # 基于 pipe 唤醒的 futex
+│   ├── exec.c                   # ELF 加载器、V8 守护页
+│   └── exit.c                   # 线程清理、safety valve
+├── fs/
+│   ├── fake.c/h                 # fakefs + bind mount
+│   ├── real.c                   # Host 文件系统访问
+│   ├── sock.c/h                 # Socket 模拟
+│   └── poll.c                   # epoll/poll/select
+├── app/
+│   ├── AppARM64.xcconfig        # ARM64 构建配置
+│   ├── GuestARM64.xcconfig      # Guest 架构定义
+│   └── RootfsPatch.bundle/      # 版本化 rootfs overlay
+└── tests/arm64/
+    ├── runtime-coverage.sh      # 完整 ARM64 runtime 覆盖脚本
+    ├── atomics/                 # 原子指令 fixture
+    ├── loadstore/               # load/store fixture
+    └── benchmarksgame/          # ARM64 工作负载 smoke 脚本
+```
+
+---
+
+## 许可
+
+与上游 iSH 相同。见 [LICENSE](LICENSE.md)。

@@ -11,7 +11,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 720
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
         with:
           submodules: true
           fetch-depth: 0
@@ -36,14 +36,14 @@ jobs:
           SLACK_URL: ${{ secrets.SLACK_URL }}
           FASTLANE_SKIP_UPDATE_CHECK: 1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: App
           path: |
             iSH.ipa
             iSH.app.dSYM.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: Fastlane Logs

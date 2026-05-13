@@ -21,7 +21,7 @@ lto       = "thin"
 codegen-units = 1
 strip = true
 
-# Tuned for the in-iSH supervisor: small static i386 musl ELF.
+# Tuned for the in-iSH supervisor: small static AArch64 musl ELF.
 [profile.supervisor]
 inherits  = "release"
 opt-level = "z"

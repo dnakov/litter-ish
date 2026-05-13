@@ -5,12 +5,10 @@
 # script only needs to produce the base Alpine fakefs.
 #
 # Inputs (env, optional):
-#   ALPINE_VERSION  default 3.18.9
+#   ALPINE_VERSION  default 3.21.0
 #
-# Pinned to 3.18 (not the latest 3.19) because iSH's i386 emulator does not
-# implement the SSE3+ instructions emitted by V8 in newer Node binaries
-# (cmplepd, cvtdq2pd, movhps, etc.). Alpine 3.18 ships nodejs-current 20.8.1,
-# the last Node version that runs end-to-end on iSH. See ish-app/ish#2335.
+# The embedded runtime is ARM64-only, so use Alpine's aarch64 minirootfs and
+# official aarch64 package repositories.
 #
 # Outputs (in <repo>/build/):
 #   fs/         directory the consumer bundles or copies into sandbox
@@ -21,12 +19,12 @@ set -eu
 cd "$(dirname "$0")/.."
 ISH_ROOT=$(pwd)
 BUILD="$ISH_ROOT/build"
-ALPINE_VERSION="${ALPINE_VERSION:-3.18.9}"
+ALPINE_VERSION="${ALPINE_VERSION:-3.21.0}"
 ALPINE_MAJOR=$(echo "$ALPINE_VERSION" | cut -d. -f1-2)
-TARBALL_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_MAJOR}/releases/x86/alpine-minirootfs-${ALPINE_VERSION}-x86.tar.gz"
+TARBALL_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_MAJOR}/releases/aarch64/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz"
 
 mkdir -p "$BUILD"
-TARBALL="$BUILD/alpine-minirootfs-${ALPINE_VERSION}.tar.gz"
+TARBALL="$BUILD/alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz"
 ROOTFS_DIR="$BUILD/fs"
 ROOTFS_TGZ="$BUILD/fs.tar.gz"
 

@@ -218,6 +218,47 @@ dword_t sys_close(fd_t f) {
     return f_close(f);
 }
 
+#define CLOSE_RANGE_UNSHARE_ (1u << 1)
+#define CLOSE_RANGE_CLOEXEC_ (1u << 2)
+
+dword_t sys_close_range(uint_t first, uint_t last, uint_t flags) {
+    STRACE("close_range(%u, %u, %#x)", first, last, flags);
+
+    if (flags & ~(CLOSE_RANGE_UNSHARE_ | CLOSE_RANGE_CLOEXEC_))
+        return _EINVAL;
+    if (first > last)
+        return _EINVAL;
+
+    struct fdtable *table = current->files;
+    lock(&table->lock);
+
+    if (table->size == 0) {
+        unlock(&table->lock);
+        return 0;
+    }
+
+    uint_t capped_last = last;
+    if (capped_last >= table->size)
+        capped_last = table->size - 1;
+    if (first >= table->size || first > capped_last) {
+        unlock(&table->lock);
+        return 0;
+    }
+
+    for (uint_t f = first; f <= capped_last; f++) {
+        if (flags & CLOSE_RANGE_CLOEXEC_) {
+            if (table->files[f] != NULL)
+                bit_set(f, table->cloexec);
+            continue;
+        }
+        if (table->files[f] != NULL)
+            fdtable_close(table, (fd_t)f);
+    }
+
+    unlock(&table->lock);
+    return 0;
+}
+
 void fdtable_do_cloexec(struct fdtable *table) {
     lock(&table->lock);
     for (fd_t f = 0; (unsigned) f < table->size; f++)
@@ -285,7 +326,7 @@ int fd_setflags(struct fd *fd, int flags) {
     return 0;
 }
 
-dword_t sys_fcntl(fd_t f, dword_t cmd, dword_t arg) {
+dword_t sys_fcntl(fd_t f, dword_t cmd, addr_t arg) {
     struct fdtable *table = current->files;
     struct fd *fd = f_get(f);
     if (fd == NULL)
@@ -381,7 +422,7 @@ dword_t sys_fcntl(fd_t f, dword_t cmd, dword_t arg) {
     }
 }
 
-dword_t sys_fcntl32(fd_t fd, dword_t cmd, dword_t arg) {
+dword_t sys_fcntl32(fd_t fd, dword_t cmd, addr_t arg) {
     switch (cmd) {
         case F_GETLK64_:
         case F_SETLK64_:
