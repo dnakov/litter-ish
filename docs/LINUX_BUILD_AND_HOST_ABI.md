@@ -272,12 +272,13 @@ shutdown. The realfs read/write path, the fast small-buffer read path, and socke
 poll waits now retry spurious host `EINTR`, but surface `_EINTR` when the guest
 has a pending unblocked signal or the thread group is exiting. Socket waits also
 use a short poll interval so helper threads blocked in `recv`/`recvmsg` can
-observe `exit_group` promptly. A follow-up socket audit bounds Unix socket
-backing paths, removes guest-sized socket-option VLAs, validates returned
-address lengths, hardens accept/name buffers, bounds `sendmsg`/`recvmsg` iov/control-message allocation and
-cleanup, translates and validates ARM64 `cmsghdr` layout for `SCM_RIGHTS`, copies only actual `recvfrom` byte counts back to the guest, and
-clears released Unix-socket name references
-after failed `bind()` calls.
+observe `exit_group` promptly. Follow-up socket audits bound Unix socket
+backing paths, remove guest-sized socket-option VLAs, validate returned address
+lengths, harden accept/name buffers, bound `sendmsg`/`recvmsg` iov/control-
+message allocation and cleanup, translate and validate ARM64 `cmsghdr` layout
+for `SCM_RIGHTS`, avoid SCM queue asserts on malformed/native ancillary data,
+copy only actual `recvfrom` byte counts back to the guest, and clear released
+Unix-socket name references after failed `bind()` calls.
 
 `exit_group` now gives helper-heavy runtimes a longer bounded drain window before
 reporting stuck detached host threads. The staged Rust and Erlang version/codegen

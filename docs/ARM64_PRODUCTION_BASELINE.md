@@ -5,8 +5,8 @@ Reviewed: 2026-05-13
 
 ## Known-good code
 
-- Code baseline: current `master` successor to `arm64-openjdk21-prod-20260510-r5`; this pass adds Rust/Erlang/Zig runtime coverage, Python/Lua/Java/Clojure/PyPy/Swift staged smoke/availability rows, ARM64 sysreg/FP16 conversion fixes, bounds-checked path/symlink expansion, and guest-signal-aware blocking I/O/exit cleanup.
-- Previous tagged production audit baseline: `arm64-openjdk21-prod-20260510-r5` (post-production audit pass covering bounded logging, mount option parsing, exec/shebang argument safety, `PT_INTERP` bounds/NUL handling, and ptraceomatic `TERM` environment construction)
+- Code baseline: current pushed `master` at `80ac6966` (`audit: validate socket control messages`), successor to tagged validation point `arm64-openjdk21-prod-20260513-r6`; this pass includes expanded language/runtime coverage, ARM64 sysreg/FP16 conversion fixes, bounds-checked path/symlink expansion, guest-signal-aware blocking I/O/exit cleanup, and socket ABI hardening through ARM64 `SCM_RIGHTS` control-message validation.
+- Previous tagged production audit baseline: `arm64-openjdk21-prod-20260513-r6` (post-r5 validation point covering 44/44 staged coverage, Benchmarks Game refresh, Java mixed/interpreter probes, and go-gte smoke; current `master` adds the later Rust/Cargo and socket ABI audit fixes)
 - Branch pushed: `master`
 - Remote pushed: `https://github.com/rcarmo/ish-arm64.git`
 

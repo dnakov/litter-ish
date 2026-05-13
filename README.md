@@ -63,7 +63,7 @@ The current split centralizes FD-path lookup, stat timestamp fields, host random
 - Added small atomic repro sources under `tests/arm64/atomics/` for LDXP/STLXP, CAS128, and CLREX+STXR/STXP semantics.
 - Stopped advertising optional ARM64 crypto/LSE features in `AT_HWCAP` until those helper sets are fully coverage-clean; runtimes can fall back to baseline FP/ASIMD paths.
 - Hardened production-adjacent launch and logging paths found during the final audit: bounded `printk`/`die` formatting, exact comma-separated mount-option parsing, bounded initial argv construction, safe `PT_INTERP` path loading, safe shebang argument trimming, and safe `TERM` environment construction in `ptraceomatic`.
-- Added bounded path/symlink expansion checks, removed stale path-normalization caching, hardened socket address/option/receive buffer handling, added guest-signal-aware `EINTR` surfacing for blocking read/write/socket paths, and kept a longer exit-group drain window so runtime helper threads can unwind without safety-valve leaks.
+- Added bounded path/symlink expansion checks, removed stale path-normalization caching, hardened socket address/option/receive/control-message handling (including ARM64 `SCM_RIGHTS` fd-passing layout), added guest-signal-aware `EINTR` surfacing for blocking read/write/socket paths, and kept a longer exit-group drain window so runtime helper threads can unwind without safety-valve leaks.
 - Extended user-readable ARM64 sysreg probes (`MIDR_EL1`, zero-valued feature/debug ID registers) and scalar FP16 conversion (`FCVT Sd,Hn` / `FCVT Dd,Hn`) for modern compiler/runtime CPU-feature paths.
 
 ## Current coverage status
