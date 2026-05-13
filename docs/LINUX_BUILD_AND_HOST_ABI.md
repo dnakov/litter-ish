@@ -256,7 +256,7 @@ Directory reads now propagate or infer Linux `DT_*` values:
 
 Validation: a minimal Bun recursive `fs.cpSync` directory tree copy succeeds,
 PiClaw no longer logs the bootstrap `ENOTSUP ... copyfile` warning, and staged
-runtime coverage remains **49 / 49 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260513-210655.md`).
+runtime coverage remains **49 / 49 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260513-212130.md`).
 
 ## Blocking I/O and exit cleanup
 
@@ -274,8 +274,9 @@ has a pending unblocked signal or the thread group is exiting. Socket waits also
 use a short poll interval so helper threads blocked in `recv`/`recvmsg` can
 observe `exit_group` promptly. A follow-up socket audit bounds Unix socket
 backing paths, removes guest-sized socket-option VLAs, validates returned
-address lengths, hardens accept/name buffers, copies only actual `recvfrom`
-byte counts back to the guest, and clears released Unix-socket name references
+address lengths, hardens accept/name buffers, bounds `sendmsg`/`recvmsg` iov allocation and
+cleanup, copies only actual `recvfrom` byte counts back to the guest, and
+clears released Unix-socket name references
 after failed `bind()` calls.
 
 `exit_group` now gives helper-heavy runtimes a longer bounded drain window before

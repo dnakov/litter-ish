@@ -203,6 +203,10 @@ static int unix_abstract_get(const char *name, struct fd *bind_fd, uint32_t *soc
 
     if (sock == NULL) {
         sock = malloc(sizeof(struct unix_abstract));
+        if (sock == NULL) {
+            unlock(&unix_abstract_lock);
+            return _ENOMEM;
+        }
         sock->refcount = 0;
         sock->hash = hash;
         sock->socket_id = unix_socket_next_id();
@@ -636,9 +640,13 @@ int_t sys_sendto(fd_t sock_fd, addr_t buffer_addr, dword_t len, dword_t flags, a
     struct fd *sock = sock_getfd(sock_fd);
     if (sock == NULL)
         return _EBADF;
-    char *buffer = malloc(len + 1);
-    if (user_read(buffer_addr, buffer, len))
+    char *buffer = malloc((size_t) len + 1);
+    if (buffer == NULL)
+        return _ENOMEM;
+    if (user_read(buffer_addr, buffer, len)) {
+        free(buffer);
         return _EFAULT;
+    }
     buffer[len] = '\0';
     STRACE("sendto(%d, \"%.100s\", %d, %d, 0x%x, %d)", sock_fd, buffer, len, flags, sockaddr_addr, sockaddr_len);
     int real_flags = sock_flags_to_real(flags);
@@ -1104,6 +1112,10 @@ int_t sys_sendmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
     if (user_get(msghdr_addr, msg_fake))
         return _EFAULT;
 #endif
+    if (msg_fake.msg_iovlen > 1024)
+        return _EMSGSIZE;
+    if (msg_fake.msg_iovlen != 0 && msg_fake.msg_iov == 0)
+        return _EFAULT;
 
     // msg_name
     struct sockaddr_max_ msg_name;
@@ -1129,6 +1141,10 @@ int_t sys_sendmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
     for (size_t i = 0; i < (size_t) msg.msg_iovlen; i++) {
         msg_iov[i].iov_len = (size_t)msg_iov_fake64[i].len;
         msg_iov[i].iov_base = malloc(msg_iov[i].iov_len);
+        if (msg_iov[i].iov_len != 0 && msg_iov[i].iov_base == NULL) {
+            err = _ENOMEM;
+            goto out_free_iov;
+        }
         err = _EFAULT;
         if (user_read((addr_t)msg_iov_fake64[i].base, msg_iov[i].iov_base, msg_iov[i].iov_len))
             goto out_free_iov;
@@ -1144,6 +1160,10 @@ int_t sys_sendmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
     for (size_t i = 0; i < (size_t) msg.msg_iovlen; i++) {
         msg_iov[i].iov_len = msg_iov_fake[i].len;
         msg_iov[i].iov_base = malloc(msg_iov_fake[i].len);
+        if (msg_iov[i].iov_len != 0 && msg_iov[i].iov_base == NULL) {
+            err = _ENOMEM;
+            goto out_free_iov;
+        }
         err = _EFAULT;
         if (user_read(msg_iov_fake[i].base, msg_iov[i].iov_base, msg_iov_fake[i].len))
             goto out_free_iov;
@@ -1176,12 +1196,16 @@ int_t sys_sendmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
         for (cmsg = (void *) msg_control; cmsg != NULL; cmsg = CMSG_NXTHDR_(cmsg, mhdr_end)) {
             if (cmsg->level != SOL_SOCKET_)
                 continue;
-            if (cmsg->type != SCM_RIGHTS_)
-                return _EINVAL;
+            if (cmsg->type != SCM_RIGHTS_) {
+                err = _EINVAL;
+                goto out_free_iov;
+            }
             num_fds += (cmsg->len - sizeof(struct cmsghdr_)) / sizeof(fd_t);
         }
-        if (num_fds > 253) // *magic*
-            return _EINVAL;
+        if (num_fds > 253) { // *magic*
+            err = _EINVAL;
+            goto out_free_iov;
+        }
 
         if (num_fds > 0) {
             // send one (1) real fd and put the rest in a struct scm
@@ -1200,8 +1224,12 @@ int_t sys_sendmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
             memcpy(CMSG_DATA(real_cmsg), &real_fd, sizeof(real_fd));
 
             scm = malloc(sizeof(struct scm) + num_fds * sizeof(struct fd *));
+            if (scm == NULL) {
+                err = _ENOMEM;
+                goto out_free_iov;
+            }
             list_init(&scm->queue);
-            scm->num_fds = num_fds;
+            scm->num_fds = 0;
             unsigned fd_i = 0;
             for (cmsg = (void *) msg_control; cmsg != NULL; cmsg = CMSG_NXTHDR_(cmsg, mhdr_end)) {
                 if (cmsg->level != SOL_SOCKET_)
@@ -1209,7 +1237,13 @@ int_t sys_sendmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
                 fd_t *fds = (void *) cmsg->data;
                 for (unsigned i = 0; i < (cmsg->len - sizeof(struct cmsghdr_)) / sizeof(fd_t); i++) {
                     STRACE(" sending fd %d", fds[i]);
-                    scm->fds[fd_i++] = fd_retain(f_get(fds[i]));
+                    struct fd *send_fd = f_get(fds[i]);
+                    if (send_fd == NULL) {
+                        err = _EBADF;
+                        goto out_free_scm;
+                    }
+                    scm->fds[fd_i++] = fd_retain(send_fd);
+                    scm->num_fds = fd_i;
                 }
             }
             lock(&peer_lock);
@@ -1282,14 +1316,21 @@ int_t sys_recvmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
     if (user_get(msghdr_addr, msg_fake))
         return _EFAULT;
 #endif
+    if (msg_fake.msg_iovlen > 1024)
+        return _EMSGSIZE;
+    if (msg_fake.msg_iovlen != 0 && msg_fake.msg_iov == 0)
+        return _EFAULT;
 
     struct msghdr msg;
 
     // msg_name
-    char msg_name[msg_fake.msg_namelen];
+    struct sockaddr_max_ msg_name;
+    uint_t msg_name_buffer_len = msg_fake.msg_namelen;
     if (msg_fake.msg_name != 0) {
-        msg.msg_name = msg_name;
-        msg.msg_namelen = sizeof(msg_name);
+        msg.msg_name = &msg_name;
+        msg.msg_namelen = msg_name_buffer_len;
+        if (msg.msg_namelen > sizeof(msg_name))
+            msg.msg_namelen = sizeof(msg_name);
     } else {
         msg.msg_name = NULL;
         msg.msg_namelen = 0;
@@ -1322,6 +1363,11 @@ int_t sys_recvmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
         msg_iov_bases[i] = (addr_t)msg_iov_fake64[i].base;
         msg_iov[i].iov_len = (size_t)msg_iov_fake64[i].len;
         msg_iov[i].iov_base = malloc(msg_iov[i].iov_len);
+        if (msg_iov[i].iov_len != 0 && msg_iov[i].iov_base == NULL) {
+            for (size_t j = 0; j < i; j++)
+                free(msg_iov[j].iov_base);
+            return _ENOMEM;
+        }
     }
 #else
     struct iovec_ msg_iov_fake[msg_fake.msg_iovlen];
@@ -1333,6 +1379,11 @@ int_t sys_recvmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
     for (size_t i = 0; i < (size_t) msg.msg_iovlen; i++) {
         msg_iov[i].iov_len = msg_iov_fake[i].len;
         msg_iov[i].iov_base = malloc(msg_iov_fake[i].len);
+        if (msg_iov[i].iov_len != 0 && msg_iov[i].iov_base == NULL) {
+            for (size_t j = 0; j < i; j++)
+                free(msg_iov[j].iov_base);
+            return _ENOMEM;
+        }
     }
 #endif
 
@@ -1391,11 +1442,16 @@ int_t sys_recvmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
 #else
             if (user_write(msg_iov_fake[i].base, msg_iov[i].iov_base, chunk_size))
 #endif
-                return _EFAULT;
+            {
+                err = _EFAULT;
+                n = chunk_size;
+            }
         }
         n -= chunk_size;
         free(msg_iov[i].iov_base);
     }
+    if (err < 0 && res >= 0)
+        return err;
 
     // msg_control (changed)
     msg_fake.msg_controllen = 0;
@@ -1437,7 +1493,7 @@ int_t sys_recvmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
 
     // msg_name (changed)
     if (msg.msg_name != 0) {
-        int err = sockaddr_write(msg_fake.msg_name, msg.msg_name, sizeof(msg_name), &msg.msg_namelen);
+        int err = sockaddr_write(msg_fake.msg_name, msg.msg_name, msg_name_buffer_len, &msg.msg_namelen);
         if (err < 0)
             return err;
     }
