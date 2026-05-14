@@ -86,7 +86,7 @@ jobs:
             if [ -n "$smoke_bin" ]; then
               lldb --batch \
                 -o "run --test-threads=1 --nocapture" \
-                -o "thread backtrace all" \
+                -k "thread backtrace all" \
                 -- "$smoke_bin" || true
             fi
           fi
