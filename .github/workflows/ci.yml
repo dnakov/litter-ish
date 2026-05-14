@@ -3,11 +3,11 @@ name: CI
 on:
   push:
   pull_request:
-      branches: [master]
+      branches: [main]
 
 jobs:
   build-linux:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         cc: [clang, gcc]
@@ -49,7 +49,7 @@ jobs:
     # Runs on macOS so the `IshInstance::boot` smoke tests can exercise
     # the kernel against a real fakefs (cross-builds the AArch64 supervisor
     # via rust-lld which ships with rustup).
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v6
         with:
@@ -70,4 +70,5 @@ jobs:
         working-directory: embed
         env:
           ISH_TEST_ROOTFS: ${{ github.workspace }}/build/fs/data
-        run: cargo test -p ish-embed-host --test smoke -- --test-threads=1
+          RUST_BACKTRACE: 1
+        run: cargo test -p ish-embed-host --test smoke -- --test-threads=1 --nocapture
