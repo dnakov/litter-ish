@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     strategy:
       matrix:
         cc: [clang, gcc]
@@ -71,4 +71,23 @@ jobs:
         env:
           ISH_TEST_ROOTFS: ${{ github.workspace }}/build/fs/data
           RUST_BACKTRACE: 1
-        run: cargo test -p ish-embed-host --test smoke -- --test-threads=1 --nocapture
+        run: |
+          set +e
+          cargo test -p ish-embed-host --test smoke -- --test-threads=1 --nocapture
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            smoke_bin=""
+            for candidate in target/debug/deps/smoke-*; do
+              if [ -x "$candidate" ] && [ -f "$candidate" ]; then
+                smoke_bin="$candidate"
+                break
+              fi
+            done
+            if [ -n "$smoke_bin" ]; then
+              lldb --batch \
+                -o "run --test-threads=1 --nocapture" \
+                -o "thread backtrace all" \
+                -- "$smoke_bin" || true
+            fi
+          fi
+          exit "$status"
