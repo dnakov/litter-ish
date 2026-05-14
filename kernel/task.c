@@ -223,9 +223,21 @@ int_t sys_sched_yield() {
 
 void update_thread_name() {
     char name[16]; // As long as Linux will let us make this
-    snprintf(name, sizeof(name), "-%d", current->pid);
-    size_t pid_width = strlen(name);
-    size_t name_width = snprintf(name, sizeof(name), "%s", current->comm);
-    sprintf(name + (name_width < sizeof(name) - 1 - pid_width ? name_width : sizeof(name) - 1 - pid_width), "-%d", current->pid);
+    char comm[sizeof(current->comm) + 1];
+    char suffix[16];
+
+    memcpy(comm, current->comm, sizeof(current->comm));
+    comm[sizeof(current->comm)] = '\0';
+    snprintf(suffix, sizeof(suffix), "-%d", current->pid);
+
+    size_t suffix_width = strlen(suffix);
+    size_t comm_width = strnlen(comm, sizeof(current->comm));
+    size_t max_comm_width = 0;
+    if (suffix_width < sizeof(name))
+        max_comm_width = sizeof(name) - 1 - suffix_width;
+    if (comm_width > max_comm_width)
+        comm_width = max_comm_width;
+
+    snprintf(name, sizeof(name), "%.*s%s", (int) comm_width, comm, suffix);
     platform_set_thread_name(name);
 }
