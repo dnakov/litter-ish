@@ -18,12 +18,12 @@ void do_uname(struct uname *uts) {
         hostname = uname_hostname_override;
 
     memset(uts, 0, sizeof(struct uname));
-    strcpy(uts->system, "Linux");
-    strcpy(uts->hostname, hostname);
-    strcpy(uts->release, "4.20.69-ish");
+    strlcpy(uts->system, "Linux", sizeof(uts->system));
+    strlcpy(uts->hostname, hostname, sizeof(uts->hostname));
+    strlcpy(uts->release, "4.20.69-ish", sizeof(uts->release));
     snprintf(uts->version, sizeof(uts->version), "%s %s %s", uname_version, __DATE__, __TIME__);
-    strcpy(uts->arch, "aarch64");
-    strcpy(uts->domain, "(none)");
+    strlcpy(uts->arch, "aarch64", sizeof(uts->arch));
+    strlcpy(uts->domain, "(none)", sizeof(uts->domain));
 }
 
 dword_t sys_uname(addr_t uts_addr) {
