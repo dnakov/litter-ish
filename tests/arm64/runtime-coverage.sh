@@ -689,6 +689,105 @@ int main(void) {
 }
 EOF
 
+    cat >"$dir/ldr_cbz_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint64_t data[2] = {0, 7};
+
+int main(void) {
+    uint64_t a = 0, b = 0, loaded0 = 99, loaded1 = 0;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "ldr %[loaded0], [x9, #0]\n"
+        "cbz %[loaded0], 1f\n"
+        "mov %[a], #99\n"
+        "b 2f\n"
+        "1: mov %[a], #11\n"
+        "2:\n"
+        "ldr %[loaded1], [x9, #8]\n"
+        "cbnz %[loaded1], 3f\n"
+        "mov %[b], #99\n"
+        "b 4f\n"
+        "3: mov %[b], #22\n"
+        "4:\n"
+        : [a] "=&r"(a), [b] "=&r"(b), [loaded0] "=&r"(loaded0), [loaded1] "=&r"(loaded1)
+        : [base] "r"(data)
+        : "x9", "memory", "cc");
+    if (a != 11 || b != 22 || loaded0 != 0 || loaded1 != 7) {
+        printf("ldr-cbz-fail %llu %llu %llu %llu\n",
+               (unsigned long long)a, (unsigned long long)b,
+               (unsigned long long)loaded0, (unsigned long long)loaded1);
+        return 1;
+    }
+    puts("ldr-cbz-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_ldr_cbz_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, xzr\n"
+"    mov x10, #123\n"
+"1:  ldr x10, [x9]\n"
+"    cbz x10, 2f\n"
+"2:  ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123) {
+        fprintf(stderr, "bad fused ldr cbz fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10);
+        return 1;
+    }
+    puts("fused-ldr-cbz-fault-ok");
+    return 0;
+}
+EOF
+
 
     cp "$PROJECT_DIR/tests/arm64/signals/sigaltstack-thread.c" "$dir/sigaltstack_thread.c"
     push_tree "$dir" "$GUEST_WORK/c"
@@ -1103,6 +1202,8 @@ run_lane() {
     run_test c "arm64 signal ucontext layout" "cd '$GUEST_WORK/c' && gcc -O0 signal_ucontext.c -o signal_ucontext && ./signal_ucontext | grep -qx signal-ucontext-ok"
     run_test c "arm64 precise fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie precise_fault_pc.c -o precise_fault_pc && ./precise_fault_pc | grep -qx precise-fault-pc-ok"
     run_test c "arm64 fused addsub ldr fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_ldr_fault.c -o fused_addsub_ldr_fault && ./fused_addsub_ldr_fault | grep -qx fused-addsub-ldr-fault-ok"
+    run_test c "arm64 ldr cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 ldr_cbz_fusion.c -o ldr_cbz_fusion && ./ldr_cbz_fusion | grep -qx ldr-cbz-fusion-ok"
+    run_test c "arm64 fused ldr cbz fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_ldr_cbz_fault.c -o fused_ldr_cbz_fault && ./fused_ldr_cbz_fault | grep -qx fused-ldr-cbz-fault-ok"
     run_test c "per-thread sigaltstack" "cd '$GUEST_WORK/c' && gcc -O0 sigaltstack_thread.c -o sigaltstack_thread -pthread && ./sigaltstack_thread | grep -qx sigaltstack-thread-ok"
     run_test c "arm64 CCMP/CCMN NV condition" "cd '$GUEST_WORK/c' && gcc -O0 ccmp_nv.c -o ccmp_nv && ./ccmp_nv | grep -qx ccmp-nv-ok"
     run_test c "arm64 barriers DMB/DSB/ISB" "cd '$GUEST_WORK/c' && gcc -O0 barriers.c -o barriers && ./barriers | grep -qx barriers-ok"

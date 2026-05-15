@@ -44,9 +44,11 @@ static uint64_t arm64_fusion_adrp_ldr64_count;
 static uint64_t arm64_fusion_addsub_fast_count;
 static uint64_t arm64_fusion_addsub_cbz_count;
 static uint64_t arm64_fusion_addsub_ldr64_count;
+static uint64_t arm64_fusion_ldr64_cbz64_count;
 static uint64_t arm64_fusion_addsub_ldr_candidate_count;
 static uint64_t arm64_fusion_addsub_str_candidate_count;
 static uint64_t arm64_fusion_ldr_cbz_candidate_count;
+static uint64_t arm64_fusion_ldr64_cbz64_candidate_count;
 static bool arm64_fusion_stats_dumped;
 
 void arm64_fusion_stats_dump_if_enabled(void) {
@@ -54,7 +56,7 @@ void arm64_fusion_stats_dump_if_enabled(void) {
         return;
     arm64_fusion_stats_dumped = true;
     fprintf(stderr,
-            "ARM64_FUSION_STATS cmp_bcond=%llu subs_bcond=%llu adrp_add=%llu adrp_ldr64=%llu addsub_fast=%llu addsub_cbz=%llu addsub_ldr64=%llu addsub_ldr_cand=%llu addsub_str_cand=%llu ldr_cbz_cand=%llu\n",
+            "ARM64_FUSION_STATS cmp_bcond=%llu subs_bcond=%llu adrp_add=%llu adrp_ldr64=%llu addsub_fast=%llu addsub_cbz=%llu addsub_ldr64=%llu ldr64_cbz64=%llu addsub_ldr_cand=%llu addsub_str_cand=%llu ldr_cbz_cand=%llu ldr64_cbz64_cand=%llu\n",
             (unsigned long long)arm64_fusion_cmp_bcond_count,
             (unsigned long long)arm64_fusion_subs_bcond_count,
             (unsigned long long)arm64_fusion_adrp_add_count,
@@ -62,9 +64,11 @@ void arm64_fusion_stats_dump_if_enabled(void) {
             (unsigned long long)arm64_fusion_addsub_fast_count,
             (unsigned long long)arm64_fusion_addsub_cbz_count,
             (unsigned long long)arm64_fusion_addsub_ldr64_count,
+            (unsigned long long)arm64_fusion_ldr64_cbz64_count,
             (unsigned long long)arm64_fusion_addsub_ldr_candidate_count,
             (unsigned long long)arm64_fusion_addsub_str_candidate_count,
-            (unsigned long long)arm64_fusion_ldr_cbz_candidate_count);
+            (unsigned long long)arm64_fusion_ldr_cbz_candidate_count,
+            (unsigned long long)arm64_fusion_ldr64_cbz64_candidate_count);
     fflush(stderr);
 }
 
@@ -157,6 +161,8 @@ extern void gadget_subs_imm_32(void);
 extern void gadget_fused_addsub_cbz(void);
 extern void gadget_fused_addsub_cbnz(void);
 extern void gadget_fused_addsub_ldr64_imm(void);
+extern void gadget_fused_ldr64_cbz_imm(void);
+extern void gadget_fused_ldr64_cbnz_imm(void);
 extern void gadget_adds_reg_64_nshift(void);
 extern void gadget_subs_reg_64_nshift(void);
 extern void gadget_add_reg_64_nshift(void);
@@ -1425,7 +1431,8 @@ static int try_fuse_addsub_ldr64(struct gen_state *state, uint32_t op, uint32_t 
     return 1;
 }
 
-static void count_ldr_cbz_candidate(struct gen_state *state, uint32_t rt) {
+static void count_ldr_cbz_candidate(struct gen_state *state, uint32_t rt,
+                                     uint32_t size, bool sign_extend) {
     uint32_t next_insn;
     if (!gen_peek_next_insn(state, &next_insn))
         return;
@@ -1434,6 +1441,40 @@ static void count_ldr_cbz_candidate(struct gen_state *state, uint32_t rt) {
     if ((next_insn & 0x1f) != rt || rt == 31)
         return;
     ARM64_FUSION_STAT_INC(arm64_fusion_ldr_cbz_candidate_count);
+    if (size == 3 && !sign_extend && ((next_insn >> 31) & 1))
+        ARM64_FUSION_STAT_INC(arm64_fusion_ldr64_cbz64_candidate_count);
+}
+
+static int try_fuse_ldr64_cbz64(struct gen_state *state, uint32_t rn, uint32_t rt, uint32_t imm12) {
+    if (rn == 31 || rt == 31 || PAGE(state->orig_ip) != PAGE(state->ip))
+        return -1;
+
+    uint32_t next_insn;
+    if (!gen_peek_next_insn(state, &next_insn))
+        return -1;
+    if ((next_insn & 0x7e000000) != 0x34000000)
+        return -1;
+    if ((next_insn & 0x1f) != rt || ((next_insn >> 31) & 1) == 0)
+        return -1;
+
+    bool is_cbnz = (next_insn >> 24) & 1;
+    addr_t cbz_pc = state->ip;
+    state->ip += 4;
+
+    int64_t offset = arm64_branch_imm19(next_insn);
+    addr_t target = cbz_pc + offset;
+    unsigned long fake_target = (unsigned long)target | (1UL << 63);
+    unsigned long fake_fallthrough = (unsigned long)state->ip | (1UL << 63);
+
+    ARM64_FUSION_STAT_INC(arm64_fusion_ldr64_cbz64_count);
+    gen(state, (unsigned long)(is_cbnz ? gadget_fused_ldr64_cbnz_imm : gadget_fused_ldr64_cbz_imm));
+    gen(state, rt | (rn << 8) | ((uint64_t)imm12 << 16));
+    gen(state, state->orig_ip);
+    gen(state, fake_target);
+    gen(state, fake_fallthrough);
+    state->jump_ip[0] = state->size - 2;
+    state->jump_ip[1] = state->size - 1;
+    return 0;
 }
 
 /*
@@ -2398,8 +2439,11 @@ static int gen_ldst(struct gen_state *state, uint32_t insn) {
 
         bool is_load = (opc & 1) == 1 || (opc & 2) == 2;
         bool sign_extend = (opc & 2) != 0;
-        if (is_load)
-            count_ldr_cbz_candidate(state, rt);
+        if (is_load) {
+            count_ldr_cbz_candidate(state, rt, size, sign_extend);
+            if (!sign_extend && size == 3 && try_fuse_ldr64_cbz64(state, rn, rt, imm12) == 0)
+                return 0;
+        }
 
         // Use fused gadgets for non-sign-extending loads and all stores
         // Sign-extending 8/16-bit loads are less common, keep as 3-gadget
