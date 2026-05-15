@@ -384,35 +384,55 @@ static page_t pt_find_hole_from(struct mem *mem, pages_t size, page_t start) {
 // Scan upward in the high address space (above 4GB) for large allocations
 // that don't fit in the low region. Used for Wasm guard regions etc.
 page_t pt_find_hole_high(struct mem *mem, pages_t size) {
-    // Search from 0x100000 (4GB) upward to USER_ADDR_MAX_PAGE
-    // Use a simple strategy: scan upward looking for unallocated L0 subtrees
+    // Search from 0x100000 (4GB) upward to USER_ADDR_MAX_PAGE. Large
+    // MAP_NORESERVE arenas are represented as reservations without allocating
+    // page-table nodes, so an empty L0 subtree is not necessarily free. Walk
+    // reservations inside each empty subtree before accepting a high hole.
     page_t page = 0x100000; // Start at 4GB
-    page_t hole_start = page;
-    pages_t hole_size = 0;
 
     while (page < USER_ADDR_MAX_PAGE) {
         int i0 = PT_INDEX(page, 0);
         struct pt_node *l0 = mem->pgdir;
         struct pt_node *l1 = l0 ? l0->children[i0] : NULL;
+        page_t l0_size = (page_t)1 << (PT_BITS * 3);
+        page_t l0_base = (page_t)i0 << (PT_BITS * 3);
+        page_t subtree_end = l0_base + l0_size;
+        if (subtree_end > USER_ADDR_MAX_PAGE)
+            subtree_end = USER_ADDR_MAX_PAGE;
+
         if (l1 == NULL) {
-            // Entire L0 subtree is empty (2^27 pages = 512GB)
-            page_t l0_size = (page_t)1 << (PT_BITS * 3);
-            page_t l0_base = (page_t)i0 << (PT_BITS * 3);
-            if (hole_size == 0) hole_start = l0_base < page ? page : l0_base;
-            page_t subtree_end = l0_base + l0_size;
-            if (subtree_end > USER_ADDR_MAX_PAGE)
-                subtree_end = USER_ADDR_MAX_PAGE;
-            hole_size = subtree_end - hole_start;
-            if (hole_size >= size)
-                return hole_start;
+            page_t candidate = l0_base < page ? page : l0_base;
+            while (candidate < subtree_end) {
+                struct mem_reservation *first = NULL;
+                for (struct mem_reservation *r = mem->reservations; r; r = r->next) {
+                    page_t r_end = r->start + r->pages;
+                    if (r_end <= candidate || r->start >= subtree_end)
+                        continue;
+                    if (r->start <= candidate) {
+                        candidate = r_end;
+                        first = r;
+                        break;
+                    }
+                    if (first == NULL || r->start < first->start)
+                        first = r;
+                }
+                if (first == NULL) {
+                    if (subtree_end - candidate >= size)
+                        return candidate;
+                    break;
+                }
+                if (first->start > candidate) {
+                    if (first->start - candidate >= size)
+                        return candidate;
+                    candidate = first->start + first->pages;
+                }
+            }
             page = subtree_end;
             continue;
         }
-        // L1 exists — something is mapped here, skip
-        hole_size = 0;
-        page_t l0_size = (page_t)1 << (PT_BITS * 3);
-        page_t l0_base = (page_t)i0 << (PT_BITS * 3);
-        page = l0_base + l0_size;
+
+        // L1 exists — something is mapped here, skip the whole subtree.
+        page = subtree_end;
     }
     return BAD_PAGE;
 }
