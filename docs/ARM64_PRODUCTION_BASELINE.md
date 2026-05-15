@@ -50,7 +50,7 @@ Reviewed: 2026-05-15
 - Runtime coverage: `/workspace/tmp/ish-arm64-runtime-coverage-20260515-132014.md`
   - Result: 49 / 49 passing
   - Includes no-safety-valve/no-NETDIAG Rust Cargo/std coverage, Erlang helper-thread cleanup validation, UDP/TCP socket-option and `sendmsg`/`recvmsg`/`SCM_RIGHTS` ABI coverage, `fchmodat2(AT_EMPTY_PATH)` coverage, high-address `MAP_NORESERVE` overlap regression coverage, and Python/Lua/Java/Clojure/PyPy/Swift/Rust/Erlang/Zig smoke or availability coverage.
-- AI CLI runtime coverage: `/workspace/tmp/ish-arm64-ai-cli-runtime-coverage-20260515-191638.md`
+- AI CLI runtime coverage: `/workspace/tmp/ish-arm64-ai-cli-runtime-coverage-20260515-200605.md`
   - Result: 16 / 16 passing on the Alpine npm lane.
   - Includes unauthenticated install/startup/version/help probes for Claude Code, OpenAI Codex, Pi, GitHub Copilot, OpenCode, Gemini CLI, and community `grok-cli`; Debian AI CLI remains a separate background lane blocked by glibc/libuv thread creation failures.
 - Go Benchmarks Game smoke: `/workspace/tmp/benchmarksgame-go-smoke-20260513-144802.md`

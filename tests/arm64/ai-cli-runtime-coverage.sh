@@ -297,7 +297,7 @@ This second runtime coverage set installs AI coding/LLM CLIs through npm/node an
 | GitHub Copilot | \`@github/copilot\` | \`copilot\` | GitHub Copilot npm CLI package. |
 | OpenCode | \`opencode-ai\` | \`opencode\` | Official OpenCode npm package. |
 | Gemini CLI | \`@google/gemini-cli\` | \`gemini\` | Official Google Gemini CLI npm package. |
-| Grok CLI | \`grok-cli\` | \`grok\` | Community Grok/xAI proxy wrapper that launches Claude Code; npm package source-builds \`keytar\` under Alpine. |
+| Grok CLI | \`grok-cli\` | \`grok\` | Community Grok/xAI proxy wrapper that launches Claude Code; npm-only row source-builds \`keytar\` under Alpine. |
 
 ## Results
 
@@ -417,7 +417,9 @@ run_lane() {
     run_tool_matrix github-copilot "@github/copilot" copilot
     run_tool_matrix opencode "opencode-ai" opencode
     run_tool_matrix gemini-cli "@google/gemini-cli" gemini
-    run_tool_matrix grok-cli "grok-cli" grok
+    if want_package_manager npm; then
+        install_and_smoke_npm grok-cli "grok-cli" grok
+    fi
 }
 
 main() {

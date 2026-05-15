@@ -16,7 +16,7 @@ Latest staged runtime report: **49 / 49 passing**
 - `SAFETY-VALVE` diagnostics in report: **0**
 - `NETDIAG` diagnostics in report: **0**
 
-AI CLI runtime coverage is tracked as a separate second-stage suite because it installs fast-moving agent packages and should not contaminate the stable 49-test core gate. Latest Alpine npm-only report: **16 / 16 passing** at `/workspace/tmp/ish-arm64-ai-cli-runtime-coverage-20260515-191638.md`, now including the community `grok-cli` Grok/xAI proxy wrapper. The Claude Code standalone Bun binary crash was traced to high-address `MAP_NORESERVE` reservation overlap; high-hole allocation and alignment are now reservation-aware. Debian AI CLI remains a background lane while glibc thread creation is still blocked by `pthread_create()`/libuv assertions.
+AI CLI runtime coverage is tracked as a separate second-stage suite because it installs fast-moving agent packages and should not contaminate the stable 49-test core gate. Latest Alpine npm-only report: **16 / 16 passing** at `/workspace/tmp/ish-arm64-ai-cli-runtime-coverage-20260515-200605.md`, now including the community `grok-cli` Grok/xAI proxy wrapper. The Claude Code standalone Bun binary crash was traced to high-address `MAP_NORESERVE` reservation overlap; high-hole allocation and alignment are now reservation-aware. Debian AI CLI remains a background lane while glibc thread creation is still blocked by `pthread_create()`/libuv assertions.
 
 This README reflects the validation sequence after tagged point `arm64-openjdk21-prod-20260513-r6`, including the later Rust/Cargo and socket ABI audit fixes, lane-aware runtime coverage, `fchmodat2(AT_EMPTY_PATH)`, reservation-aware high-address `MAP_NORESERVE` handling, and the separate AI CLI coverage harness.
 

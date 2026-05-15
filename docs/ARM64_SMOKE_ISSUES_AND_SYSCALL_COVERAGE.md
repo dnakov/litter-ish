@@ -176,7 +176,7 @@ This pass also fixed robustness issues exposed by the broader toolchain set: pat
 
 ## 2026-05-15 AI CLI and high-address reservation audit
 
-The separate AI CLI runtime suite validates unauthenticated install/startup/version/help probes for Claude Code, OpenAI Codex, Pi, GitHub Copilot, OpenCode, Gemini CLI, and community `grok-cli`. The latest Alpine npm lane report is `/workspace/tmp/ish-arm64-ai-cli-runtime-coverage-20260515-191638.md` with **16 / 16 passing**.
+The separate AI CLI runtime suite validates unauthenticated install/startup/version/help probes for Claude Code, OpenAI Codex, Pi, GitHub Copilot, OpenCode, Gemini CLI, and community `grok-cli`. The latest Alpine npm lane report is `/workspace/tmp/ish-arm64-ai-cli-runtime-coverage-20260515-200605.md` with **16 / 16 passing**.
 
 This audit closed two runtime correctness issues found while isolating Claude/Bun startup failures:
 
