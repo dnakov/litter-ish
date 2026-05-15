@@ -399,6 +399,73 @@ int main(void) {
 }
 EOF
 
+    cat >"$dir/addsub_cbz.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint64_t sub_cbnz64(uint64_t n) {
+    uint64_t v;
+    __asm__ volatile(
+        "mov %0, %1\n"
+        "1: sub %0, %0, #1\n"
+        "cbnz %0, 1b\n"
+        : "=&r"(v) : "r"(n));
+    return v;
+}
+
+static uint64_t add_cbnz64(uint64_t n) {
+    uint64_t v;
+    __asm__ volatile(
+        "mov %0, %1\n"
+        "1: add %0, %0, #1\n"
+        "cbnz %0, 1b\n"
+        : "=&r"(v) : "r"(n));
+    return v;
+}
+
+static uint64_t sub_cbz64(uint64_t n) {
+    uint64_t v, out;
+    __asm__ volatile(
+        "mov %0, %2\n"
+        "sub %0, %0, #1\n"
+        "cbz %0, 1f\n"
+        "mov %1, #99\n"
+        "b 2f\n"
+        "1: mov %1, #7\n"
+        "2:\n"
+        : "=&r"(v), "=&r"(out) : "r"(n));
+    return v + out;
+}
+
+static uint32_t add_cbz32(uint32_t n) {
+    uint32_t v, out;
+    __asm__ volatile(
+        "mov %w0, %w2\n"
+        "add %w0, %w0, #1\n"
+        "cbz %w0, 1f\n"
+        "mov %w1, #99\n"
+        "b 2f\n"
+        "1: mov %w1, #11\n"
+        "2:\n"
+        : "=&r"(v), "=&r"(out) : "r"(n));
+    return v + out;
+}
+
+int main(void) {
+    int fail = 0;
+    if (sub_cbnz64(5) != 0) fail++;
+    if (add_cbnz64(UINT64_MAX - 2) != 0) fail++;
+    if (sub_cbz64(1) != 7) fail++;
+    if (add_cbz32(UINT32_MAX) != 11) fail++;
+    if (fail) {
+        printf("addsub-cbz-fail %d\n", fail);
+        return 1;
+    }
+    puts("addsub-cbz-ok");
+    return 0;
+}
+EOF
+
     cat >"$dir/signal_ucontext.c" <<'EOF'
 #define _GNU_SOURCE
 #include <signal.h>
@@ -882,6 +949,7 @@ run_lane() {
     run_test c "arm64 CCMP/CCMN NV condition" "cd '$GUEST_WORK/c' && gcc -O0 ccmp_nv.c -o ccmp_nv && ./ccmp_nv | grep -qx ccmp-nv-ok"
     run_test c "arm64 barriers DMB/DSB/ISB" "cd '$GUEST_WORK/c' && gcc -O0 barriers.c -o barriers && ./barriers | grep -qx barriers-ok"
     run_test c "arm64 self-modifying code invalidation" "cd '$GUEST_WORK/c' && gcc -O0 smc.c -o smc && ./smc | grep -qx 'smc 1 2'"
+    run_test c "arm64 add/sub cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_cbz.c -o addsub_cbz && ./addsub_cbz | grep -qx addsub-cbz-ok"
 
     ensure_tools 'go|golang-go:go'
     prepare_go_fixture

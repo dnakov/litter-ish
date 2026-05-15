@@ -386,6 +386,104 @@ cbnz_32_t_unchained:
     b fiber_ret_chain
 
 /*
+ * Fused ADD/SUB immediate + CBZ/CBNZ of the result.
+ * Code stream: [gadget addr][rd | rn<<8 | imm12<<16 | op<<28 | sf<<29 | test_sf<<30]
+ *              [fake_target][fake_fallthrough]
+ * op=0 ADD, op=1 SUB. sf is the ADD/SUB width; test_sf is the CBZ/CBNZ width.
+ */
+.gadget fused_addsub_cbz
+    ldr x8, [_pc]
+    add _pc, _pc, #8
+    ldr x9, [_pc]
+    add _pc, _pc, #8
+    ldr x10, [_pc]
+    and x12, x8, #0x1f           // rd
+    ubfx x13, x8, #8, #5        // rn
+    ubfx x11, x8, #16, #12      // imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x13, lsl #3]
+    tbnz x8, #29, fused_addsub_cbz_64
+    tbnz x8, #28, fused_addsub_cbz_sub32
+    add w16, w15, w11
+    b fused_addsub_cbz_store
+fused_addsub_cbz_sub32:
+    sub w16, w15, w11
+    b fused_addsub_cbz_store
+fused_addsub_cbz_64:
+    tbnz x8, #28, fused_addsub_cbz_sub64
+    add x16, x15, x11
+    b fused_addsub_cbz_store
+fused_addsub_cbz_sub64:
+    sub x16, x15, x11
+fused_addsub_cbz_store:
+    str x16, [x14, x12, lsl #3]
+    tbnz x8, #30, fused_addsub_cbz_test64
+    cbz w16, fused_addsub_cbz_taken
+    b fused_addsub_cbz_not_taken
+fused_addsub_cbz_test64:
+    cbz x16, fused_addsub_cbz_taken
+fused_addsub_cbz_not_taken:
+    inline_chain x10, fused_addsub_cbz_nt_unchained
+fused_addsub_cbz_nt_unchained:
+    and x11, x10, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x10
+    b fiber_ret_chain
+fused_addsub_cbz_taken:
+    inline_chain x9, fused_addsub_cbz_t_unchained
+fused_addsub_cbz_t_unchained:
+    and x11, x9, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x9
+    b fiber_ret_chain
+
+.gadget fused_addsub_cbnz
+    ldr x8, [_pc]
+    add _pc, _pc, #8
+    ldr x9, [_pc]
+    add _pc, _pc, #8
+    ldr x10, [_pc]
+    and x12, x8, #0x1f
+    ubfx x13, x8, #8, #5
+    ubfx x11, x8, #16, #12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x13, lsl #3]
+    tbnz x8, #29, fused_addsub_cbnz_64
+    tbnz x8, #28, fused_addsub_cbnz_sub32
+    add w16, w15, w11
+    b fused_addsub_cbnz_store
+fused_addsub_cbnz_sub32:
+    sub w16, w15, w11
+    b fused_addsub_cbnz_store
+fused_addsub_cbnz_64:
+    tbnz x8, #28, fused_addsub_cbnz_sub64
+    add x16, x15, x11
+    b fused_addsub_cbnz_store
+fused_addsub_cbnz_sub64:
+    sub x16, x15, x11
+fused_addsub_cbnz_store:
+    str x16, [x14, x12, lsl #3]
+    tbnz x8, #30, fused_addsub_cbnz_test64
+    cbnz w16, fused_addsub_cbnz_taken
+    b fused_addsub_cbnz_not_taken
+fused_addsub_cbnz_test64:
+    cbnz x16, fused_addsub_cbnz_taken
+fused_addsub_cbnz_not_taken:
+    inline_chain x10, fused_addsub_cbnz_nt_unchained
+fused_addsub_cbnz_nt_unchained:
+    and x11, x10, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x10
+    b fiber_ret_chain
+fused_addsub_cbnz_taken:
+    inline_chain x9, fused_addsub_cbnz_t_unchained
+fused_addsub_cbnz_t_unchained:
+    and x11, x9, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x9
+    b fiber_ret_chain
+
+/*
  * Conditional branch (B.cond)
  * Code stream: [gadget addr][cond (64-bit)][fake_target (64-bit)][fake_fallthrough (64-bit)]
  *

@@ -40,15 +40,26 @@ ISH_ARM64_FUSION_STATS=1 ./build-arm64-linux/ish -f alpine-arm64-fakefs /bin/sh 
 They are silent by default and print one line per one-shot emulator process, for example:
 
 ```text
-ARM64_FUSION_STATS cmp_bcond=5532 subs_bcond=92 adrp_add=2636 adrp_ldr64=1638 addsub_fast=21941
+ARM64_FUSION_STATS cmp_bcond=5532 subs_bcond=92 adrp_add=2636 adrp_ldr64=1638 addsub_fast=21935 addsub_cbz=6
 ```
 
 The first counter-enabled Node/Bun perf-table run is `/workspace/tmp/ish-arm64-node-bun-perf-20260515-214650.md` with **10 / 10 passing**. The hottest current categories are existing `CMP + B.cond` fusion and specialized add/sub fast paths, especially in Node eval/JSON rows.
 
+First Phase 1 tranche:
+
+- Added a pure register/control-flow peephole for `ADD/SUB (imm, no flags) + CBZ/CBNZ` when the branch tests the just-written result register.
+- Added `arm64 add/sub cbz fusion` runtime coverage with explicit 64-bit `SUB+CBNZ`, 64-bit `ADD+CBNZ`, 64-bit `SUB+CBZ`, and 32-bit `ADD+CBZ` cases.
+- Hardened the Node/Bun perf table to assert expected output, not just exit status.
+- Validation reports:
+  - Targeted JS smoke: Node and Bun both returned `addsub-js-ok`.
+  - Counter-enabled Node/Bun perf: `/workspace/tmp/ish-arm64-node-bun-perf-20260515-222649.md`, **10 / 10 passing**. Representative hits: Node eval `addsub_cbz=285`, Node JSON `384`, Bun eval `22`, Bun JSON `24`.
+  - Default/no-stats Node/Bun perf: `/workspace/tmp/ish-arm64-node-bun-perf-20260515-222729.md`, **10 / 10 passing**, no stats output.
+  - Core Alpine runtime coverage: `/workspace/tmp/ish-arm64-runtime-coverage-20260515-221106.md`, all displayed checks passing including the new fusion fixture.
+
 Next steps:
 
-1. Use the generation counters to inventory current fusion hit opportunities.
-2. Add more granular counters where needed before selecting a new fused gadget.
+1. Treat `ADD/SUB + CBZ/CBNZ` as the first safe but modest-hit tranche.
+2. Use more granular counters before selecting the next fused gadget.
 3. Prefer pure register/control fusions first:
    - `ADRP+ADD` variants not already covered;
    - compare/test + branch gaps;

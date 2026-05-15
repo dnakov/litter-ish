@@ -42,6 +42,7 @@ static uint64_t arm64_fusion_subs_bcond_count;
 static uint64_t arm64_fusion_adrp_add_count;
 static uint64_t arm64_fusion_adrp_ldr64_count;
 static uint64_t arm64_fusion_addsub_fast_count;
+static uint64_t arm64_fusion_addsub_cbz_count;
 static bool arm64_fusion_stats_dumped;
 
 void arm64_fusion_stats_dump_if_enabled(void) {
@@ -49,12 +50,13 @@ void arm64_fusion_stats_dump_if_enabled(void) {
         return;
     arm64_fusion_stats_dumped = true;
     fprintf(stderr,
-            "ARM64_FUSION_STATS cmp_bcond=%llu subs_bcond=%llu adrp_add=%llu adrp_ldr64=%llu addsub_fast=%llu\n",
+            "ARM64_FUSION_STATS cmp_bcond=%llu subs_bcond=%llu adrp_add=%llu adrp_ldr64=%llu addsub_fast=%llu addsub_cbz=%llu\n",
             (unsigned long long)arm64_fusion_cmp_bcond_count,
             (unsigned long long)arm64_fusion_subs_bcond_count,
             (unsigned long long)arm64_fusion_adrp_add_count,
             (unsigned long long)arm64_fusion_adrp_ldr64_count,
-            (unsigned long long)arm64_fusion_addsub_fast_count);
+            (unsigned long long)arm64_fusion_addsub_fast_count,
+            (unsigned long long)arm64_fusion_addsub_cbz_count);
     fflush(stderr);
 }
 
@@ -144,6 +146,8 @@ extern void gadget_add_imm_32(void);
 extern void gadget_sub_imm_32(void);
 extern void gadget_adds_imm_32(void);
 extern void gadget_subs_imm_32(void);
+extern void gadget_fused_addsub_cbz(void);
+extern void gadget_fused_addsub_cbnz(void);
 extern void gadget_adds_reg_64_nshift(void);
 extern void gadget_subs_reg_64_nshift(void);
 extern void gadget_add_reg_64_nshift(void);
@@ -1309,6 +1313,43 @@ static int try_fuse_subs_reg_bcond(struct gen_state *state, uint32_t rd, uint32_
 }
 
 /*
+ * Try to fuse ADD/SUB immediate with a following CBZ/CBNZ of the result.
+ * This is a pure register/control-flow peephole: it writes the ADD/SUB result,
+ * tests that same architectural register, and ends the block at the branch.
+ */
+static int try_fuse_addsub_cbz(struct gen_state *state, uint32_t sf, uint32_t op,
+                               uint32_t rd, uint32_t rn, uint32_t imm12) {
+    uint32_t next_insn;
+    if (!gen_peek_next_insn(state, &next_insn))
+        return -1;
+    if ((next_insn & 0x7e000000) != 0x34000000)
+        return -1;
+
+    bool is_cbnz = (next_insn >> 24) & 1;
+    uint32_t test_sf = (next_insn >> 31) & 1;
+    uint32_t rt = next_insn & 0x1f;
+    if (rt != rd || rt == 31)
+        return -1;
+
+    state->ip += 4;
+
+    int64_t offset = arm64_branch_imm19(next_insn);
+    addr_t target = (state->ip - 4) + offset;
+    unsigned long fake_target = (unsigned long)target | (1UL << 63);
+    unsigned long fake_fallthrough = (unsigned long)state->ip | (1UL << 63);
+
+    ARM64_FUSION_STAT_INC(arm64_fusion_addsub_cbz_count);
+    gen(state, (unsigned long)(is_cbnz ? gadget_fused_addsub_cbnz : gadget_fused_addsub_cbz));
+    gen(state, rd | (rn << 8) | ((uint64_t)imm12 << 16) |
+               ((uint64_t)op << 28) | ((uint64_t)sf << 29) | ((uint64_t)test_sf << 30));
+    gen(state, fake_target);
+    gen(state, fake_fallthrough);
+    state->jump_ip[0] = state->size - 2;
+    state->jump_ip[1] = state->size - 1;
+    return 0;
+}
+
+/*
  * Data Processing (Immediate)
  */
 static int gen_dp_imm(struct gen_state *state, uint32_t insn) {
@@ -1391,6 +1432,12 @@ static int gen_dp_imm(struct gen_state *state, uint32_t insn) {
         // (only for SUB with flags, no shift, rn!=31)
         if (!sh && rn != 31 && S && op == 1) {
             int fused = try_fuse_subs_bcond(state, sf, rd, rn, imm12);
+            if (fused == 0) return 0;  // fused and block ended
+        }
+
+        // Try ADD/SUB imm + CBZ/CBNZ of the result before the single-insn fast path.
+        if (!sh && !S && rd != 31 && rn != 31) {
+            int fused = try_fuse_addsub_cbz(state, sf, op, rd, rn, imm12);
             if (fused == 0) return 0;  // fused and block ended
         }
 

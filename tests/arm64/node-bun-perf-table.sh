@@ -35,7 +35,7 @@ append_row() {
 }
 
 guest_run_timed() {
-    local runtime="$1" test_name="$2" cmd="$3"
+    local runtime="$1" test_name="$2" cmd="$3" expect_regex="${4:-}"
     local out="$HOST_TMP/out.txt"
     local start_ms end_ms elapsed rc status detail
 
@@ -50,7 +50,7 @@ guest_run_timed() {
     end_ms="$(date +%s%3N)"
     elapsed=$((end_ms - start_ms))
 
-    if [ "$rc" -eq 0 ] && grep -q '^__ISH_STATUS:0$' "$out" && ! grep -Eq 'SAFETY-VALVE|HOST CRASH|Segmentation fault|Bun has crashed|Assertion failed|page fault on|illegal instruction|Illegal instruction' "$out"; then
+    if [ "$rc" -eq 0 ] && grep -q '^__ISH_STATUS:0$' "$out" && ! grep -Eq 'SAFETY-VALVE|HOST CRASH|Segmentation fault|Bun has crashed|Assertion failed|page fault on|illegal instruction|Illegal instruction' "$out" && { [ -z "$expect_regex" ] || grep -Eq "$expect_regex" "$out"; }; then
         status=PASS
         PASS_COUNT=$((PASS_COUNT + 1))
         echo PASS
@@ -74,17 +74,17 @@ run_lane() {
     [ -d "$ROOTFS" ] || { echo "missing rootfs for lane $LANE_NAME: $ROOTFS" >&2; return 1; }
     ensure_lane_basics
 
-    guest_run_timed node "version" "node --version"
-    guest_run_timed node "eval" "node -e 'console.log(1+1)'"
-    guest_run_timed node "json loop" "node -e 'const o={a:Array.from({length:128},(_,i)=>i),s:\"abcdefghijklmnopqrstuvwxyz\"}; let s=\"\"; for (let i=0;i<12000;i++) s=JSON.stringify(o); let n=0; for (let i=0;i<12000;i++) n+=JSON.parse(s).a.length; console.log(n);'"
-    guest_run_timed node "fs small files" "rm -rf /tmp/node-perf-fs && mkdir -p /tmp/node-perf-fs && node -e 'const fs=require(\"fs\"),p=\"/tmp/node-perf-fs\"; for(let i=0;i<300;i++)fs.writeFileSync(p+\"/\"+i+\".txt\",String(i)); let n=0; for(let i=0;i<300;i++){const f=p+\"/\"+i+\".txt\"; n+=fs.statSync(f).size; n+=Number(fs.readFileSync(f,\"utf8\"));} console.log(n);'"
-    guest_run_timed node "recursive copy" "rm -rf /tmp/node-perf-src /tmp/node-perf-dst && mkdir -p /tmp/node-perf-src/a /tmp/node-perf-src/b && node -e 'const fs=require(\"fs\"); for(let i=0;i<120;i++){const d=(i%2)?\"a\":\"b\"; fs.writeFileSync(\"/tmp/node-perf-src/\"+d+\"/\"+i+\".txt\",String(i));} fs.cpSync(\"/tmp/node-perf-src\",\"/tmp/node-perf-dst\",{recursive:true}); console.log(fs.readdirSync(\"/tmp/node-perf-dst/a\").length+fs.readdirSync(\"/tmp/node-perf-dst/b\").length);'"
+    guest_run_timed node "version" "node --version" '^v[0-9]+'
+    guest_run_timed node "eval" "node -e 'console.log(1+1)'" '^2$'
+    guest_run_timed node "json loop" "node -e 'const o={a:Array.from({length:128},(_,i)=>i),s:\"abcdefghijklmnopqrstuvwxyz\"}; let s=\"\"; for (let i=0;i<12000;i++) s=JSON.stringify(o); let n=0; for (let i=0;i<12000;i++) n+=JSON.parse(s).a.length; console.log(n);'" '^1536000$'
+    guest_run_timed node "fs small files" "rm -rf /tmp/node-perf-fs && mkdir -p /tmp/node-perf-fs && node -e 'const fs=require(\"fs\"),p=\"/tmp/node-perf-fs\"; for(let i=0;i<300;i++)fs.writeFileSync(p+\"/\"+i+\".txt\",String(i)); let n=0; for(let i=0;i<300;i++){const f=p+\"/\"+i+\".txt\"; n+=fs.statSync(f).size; n+=Number(fs.readFileSync(f,\"utf8\"));} console.log(n);'" '^45640$'
+    guest_run_timed node "recursive copy" "rm -rf /tmp/node-perf-src /tmp/node-perf-dst && mkdir -p /tmp/node-perf-src/a /tmp/node-perf-src/b && node -e 'const fs=require(\"fs\"); for(let i=0;i<120;i++){const d=(i%2)?\"a\":\"b\"; fs.writeFileSync(\"/tmp/node-perf-src/\"+d+\"/\"+i+\".txt\",String(i));} fs.cpSync(\"/tmp/node-perf-src\",\"/tmp/node-perf-dst\",{recursive:true}); console.log(fs.readdirSync(\"/tmp/node-perf-dst/a\").length+fs.readdirSync(\"/tmp/node-perf-dst/b\").length);'" '^120$'
 
-    guest_run_timed bun "version" "bun --version"
-    guest_run_timed bun "eval" "bun -e 'console.log(1+1)'"
-    guest_run_timed bun "json loop" "bun -e 'const o={a:Array.from({length:128},(_,i)=>i),s:\"abcdefghijklmnopqrstuvwxyz\"}; let s=\"\"; for (let i=0;i<12000;i++) s=JSON.stringify(o); let n=0; for (let i=0;i<12000;i++) n+=JSON.parse(s).a.length; console.log(n);'"
-    guest_run_timed bun "fs small files" "rm -rf /tmp/bun-perf-fs && mkdir -p /tmp/bun-perf-fs && bun -e 'const fs=require(\"fs\"),p=\"/tmp/bun-perf-fs\"; for(let i=0;i<300;i++)fs.writeFileSync(p+\"/\"+i+\".txt\",String(i)); let n=0; for(let i=0;i<300;i++){const f=p+\"/\"+i+\".txt\"; n+=fs.statSync(f).size; n+=Number(fs.readFileSync(f,\"utf8\"));} console.log(n);'"
-    guest_run_timed bun "recursive copy" "rm -rf /tmp/bun-perf-src /tmp/bun-perf-dst && mkdir -p /tmp/bun-perf-src/a /tmp/bun-perf-src/b && bun -e 'const fs=require(\"fs\"); for(let i=0;i<120;i++){const d=(i%2)?\"a\":\"b\"; fs.writeFileSync(\"/tmp/bun-perf-src/\"+d+\"/\"+i+\".txt\",String(i));} fs.cpSync(\"/tmp/bun-perf-src\",\"/tmp/bun-perf-dst\",{recursive:true}); console.log(fs.readdirSync(\"/tmp/bun-perf-dst/a\").length+fs.readdirSync(\"/tmp/bun-perf-dst/b\").length);'"
+    guest_run_timed bun "version" "bun --version" '^[0-9]+[.]'
+    guest_run_timed bun "eval" "bun -e 'console.log(1+1)'" '^2$'
+    guest_run_timed bun "json loop" "bun -e 'const o={a:Array.from({length:128},(_,i)=>i),s:\"abcdefghijklmnopqrstuvwxyz\"}; let s=\"\"; for (let i=0;i<12000;i++) s=JSON.stringify(o); let n=0; for (let i=0;i<12000;i++) n+=JSON.parse(s).a.length; console.log(n);'" '^1536000$'
+    guest_run_timed bun "fs small files" "rm -rf /tmp/bun-perf-fs && mkdir -p /tmp/bun-perf-fs && bun -e 'const fs=require(\"fs\"),p=\"/tmp/bun-perf-fs\"; for(let i=0;i<300;i++)fs.writeFileSync(p+\"/\"+i+\".txt\",String(i)); let n=0; for(let i=0;i<300;i++){const f=p+\"/\"+i+\".txt\"; n+=fs.statSync(f).size; n+=Number(fs.readFileSync(f,\"utf8\"));} console.log(n);'" '^45640$'
+    guest_run_timed bun "recursive copy" "rm -rf /tmp/bun-perf-src /tmp/bun-perf-dst && mkdir -p /tmp/bun-perf-src/a /tmp/bun-perf-src/b && bun -e 'const fs=require(\"fs\"); for(let i=0;i<120;i++){const d=(i%2)?\"a\":\"b\"; fs.writeFileSync(\"/tmp/bun-perf-src/\"+d+\"/\"+i+\".txt\",String(i));} fs.cpSync(\"/tmp/bun-perf-src\",\"/tmp/bun-perf-dst\",{recursive:true}); console.log(fs.readdirSync(\"/tmp/bun-perf-dst/a\").length+fs.readdirSync(\"/tmp/bun-perf-dst/b\").length);'" '^120$'
 }
 
 for lane in $ROOTFS_LANES; do
