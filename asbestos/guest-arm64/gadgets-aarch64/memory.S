@@ -2240,6 +2240,101 @@ fused_ldr32_cbnz_t_unchained:
     read_bullshit 32, fused_ldr32_cbnz_imm_1
 
 /*
+ * Fused LDRB Wt, [Xn, #imm] + CBZ/CBNZ Wt.
+ * Code stream: [gadget addr][rt | rn<<8 | ldr_imm12<<16][ldr_guest_pc][target][fallthrough]
+ * The loaded register is zero-extended and stored before branching.
+ * LOCAL_jit_saved_pc is set to the LDRB PC before the faultable access so
+ * guest signals report the load.
+ */
+.gadget fused_ldr8_cbz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC
+    ldr x25, [_pc, #16]         // target (fake_ip or chained)
+    ldr x26, [_pc, #24]         // fallthrough (fake_ip or chained)
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5        // rn
+    ubfx x10, x22, #16, #12     // imm12, scaled by 1
+    add x11, _cpu, #CPU_x0
+    ldr x12, [x11, x9, lsl #3]
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 8, fused_ldr8_cbz_imm_1
+    ldrb w0, [_addr]
+
+    and x8, x22, #0x1f          // rt
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbz x0, fused_ldr8_cbz_taken
+fused_ldr8_cbz_not_taken:
+    tbnz x26, #63, fused_ldr8_cbz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr8_cbz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr8_cbz_taken:
+    tbnz x25, #63, fused_ldr8_cbz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr8_cbz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 8, fused_ldr8_cbz_imm_1
+
+.gadget fused_ldr8_cbnz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    ldr x25, [_pc, #16]
+    ldr x26, [_pc, #24]
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5
+    ubfx x10, x22, #16, #12
+    add x11, _cpu, #CPU_x0
+    ldr x12, [x11, x9, lsl #3]
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 8, fused_ldr8_cbnz_imm_1
+    ldrb w0, [_addr]
+
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbnz x0, fused_ldr8_cbnz_taken
+fused_ldr8_cbnz_not_taken:
+    tbnz x26, #63, fused_ldr8_cbnz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr8_cbnz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr8_cbnz_taken:
+    tbnz x25, #63, fused_ldr8_cbnz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr8_cbnz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 8, fused_ldr8_cbnz_imm_1
+
+/*
  * Fused ADRP+ADD gadget
  * When ADRP Xd, #page is immediately followed by ADD Xd, Xd, #imm12,
  * we compute the final address directly without intermediate register writes.
