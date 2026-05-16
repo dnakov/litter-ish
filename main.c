@@ -253,7 +253,9 @@ int main(int argc, char *const argv[]) {
     const char *trace_faults = getenv("ISH_TRACE_FAULTS");
     g_trace_faults = trace_faults && trace_faults[0] && strcmp(trace_faults, "0") != 0;
     extern void arm64_fusion_stats_set_enabled_from_env(const char *env);
+    extern void arm64_block_stats_set_enabled_from_env(const char *env);
     arm64_fusion_stats_set_enabled_from_env(getenv("ISH_ARM64_FUSION_STATS"));
+    arm64_block_stats_set_enabled_from_env(getenv("ISH_ARM64_BLOCK_STATS"));
     asbestos_set_trace_pcs(getenv("ISH_TRACE_PCS"));
     asbestos_set_trace_gate(getenv("ISH_TRACE_GATE_PC"),
                             getenv("ISH_TRACE_GATE_X4"),

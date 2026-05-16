@@ -325,7 +325,18 @@ Phase 2Q implementation tranche:
 
 ## Phase 3: linear superblocks
 
-Phase 3 should wait until the Phase 1 fusion tranche is stable across repeated Node/Bun and core runtime runs. Initial design remains same-page and conservative:
+Phase 2 closeout / Phase 3A reconnaissance:
+
+- After Phase 2Q, the measured `LDR -> CBZ` residual gap is about `773` out of `138419` candidates in `/workspace/tmp/ish-arm64-node-bun-perf-20260516-041206.md`, so Phase 2 peephole work is effectively complete for adjacent same-page patterns.
+- Added opt-in block/chaining reconnaissance counters with `ISH_ARM64_BLOCK_STATS=1`. These are silent by default and print one `ARM64_BLOCK_STATS` line per process at exit, analogous to `ISH_ARM64_FUSION_STATS`.
+- The counters track block entries, cache hits/misses, compiled blocks, generated code words, guest bytes, direct jump slots, chain attempts, and chain patches.
+- Validation reports:
+  - Fusion+block-stats Node/Bun perf: `/workspace/tmp/ish-arm64-node-bun-perf-20260516-043212.md`, **10 / 10 passing**. Aggregated table totals: `entries=13142739`, `compiled=4483554`, `chain_attempts=6046842`, `chain_patches=5296075`, patch rate about **87.6%**, average compiled block length about **23.6 guest bytes**.
+  - Default/no-stats Node/Bun perf: `/workspace/tmp/ish-arm64-node-bun-perf-20260516-043257.md`, **10 / 10 passing**, no stats output.
+  - Core Alpine runtime coverage: `/workspace/tmp/ish-arm64-runtime-coverage-20260516-043349.md`, **82 / 82 passing**.
+- Phase 3A should remain reconnaissance/design first. The high chain-patch rate confirms that a same-page direct-target superblock prototype may be worthwhile, but the first prototype should not weaken invalidation or precise fault-PC guarantees.
+
+Phase 3 should wait until the Phase 1/2 fusion tranche is stable across repeated Node/Bun and core runtime runs. Initial design remains same-page and conservative:
 
 - max 2-4 basic blocks;
 - max 32-64 guest instructions;

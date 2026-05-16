@@ -8,7 +8,7 @@ The upstream/original README is preserved as [ORIGINAL_README.md](ORIGINAL_READM
 
 Latest staged runtime report: **82 / 82 passing**
 
-- Report: `/workspace/tmp/ish-arm64-runtime-coverage-20260516-041337.md`
+- Report: `/workspace/tmp/ish-arm64-runtime-coverage-20260516-043349.md`
 - Binary: `build-arm64-linux/ish`
 - Rootfs: `alpine-arm64-fakefs`
 - Timeout: `TIMEOUT_S=180`
@@ -34,7 +34,7 @@ Run the staged runtime coverage gate (defaults to all configured lanes; use `ROO
 make test-arm64-runtime-coverage REPORT_DIR=/workspace/tmp TIMEOUT_S=180 INSTALL_TIMEOUT_S=300
 ```
 
-Run the focused Node/Bun perf table before and after executor optimization work. Latest baseline: **10 / 10 passing** at `/workspace/tmp/ish-arm64-node-bun-perf-20260515-213520.md`. To include opt-in ARM64 peephole generation counters, set `ISH_ARM64_FUSION_STATS=1`; the first counter-enabled run is `/workspace/tmp/ish-arm64-node-bun-perf-20260515-214650.md`. The table validates expected Node/Bun output as well as exit status. Latest Phase 2Q sign-ext branch-width relaxation validation: stats `/workspace/tmp/ish-arm64-node-bun-perf-20260516-041206.md` and default `/workspace/tmp/ish-arm64-node-bun-perf-20260516-041249.md`, both **10 / 10 passing**. Current staged runtime report remains **82 / 82 passing** at `/workspace/tmp/ish-arm64-runtime-coverage-20260516-041337.md`.
+Run the focused Node/Bun perf table before and after executor optimization work. Latest baseline: **10 / 10 passing** at `/workspace/tmp/ish-arm64-node-bun-perf-20260515-213520.md`. To include opt-in ARM64 peephole generation counters, set `ISH_ARM64_FUSION_STATS=1`; the first counter-enabled run is `/workspace/tmp/ish-arm64-node-bun-perf-20260515-214650.md`. The table validates expected Node/Bun output as well as exit status. Latest Phase 3A reconnaissance-counter validation: fusion+block stats `/workspace/tmp/ish-arm64-node-bun-perf-20260516-043212.md` and default `/workspace/tmp/ish-arm64-node-bun-perf-20260516-043257.md`, both **10 / 10 passing**. `ISH_ARM64_BLOCK_STATS=1` is silent by default unless enabled and reported a strong chaining signal in the stats run: about 6.0M chain attempts, 5.3M patches, and an 87.6% patch rate. Current staged runtime report remains **82 / 82 passing** at `/workspace/tmp/ish-arm64-runtime-coverage-20260516-043349.md`.
 
 ```bash
 make test-arm64-node-bun-perf ROOTFS_LANES=alpine=$(pwd)/alpine-arm64-fakefs REPORT_DIR=/workspace/tmp TIMEOUT_S=180

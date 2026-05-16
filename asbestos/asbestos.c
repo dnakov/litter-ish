@@ -42,6 +42,56 @@ __thread int ish_thread_marker;
 
 extern int current_pid(void);
 
+#ifdef GUEST_ARM64
+static bool arm64_block_stats_enabled;
+static bool arm64_block_stats_dumped;
+static _Atomic uint64_t arm64_block_stats_entries;
+static _Atomic uint64_t arm64_block_stats_cache_hits;
+static _Atomic uint64_t arm64_block_stats_cache_misses;
+static _Atomic uint64_t arm64_block_stats_compiled;
+static _Atomic uint64_t arm64_block_stats_code_words;
+static _Atomic uint64_t arm64_block_stats_guest_bytes;
+static _Atomic uint64_t arm64_block_stats_jump0;
+static _Atomic uint64_t arm64_block_stats_jump1;
+static _Atomic uint64_t arm64_block_stats_chain_attempts;
+static _Atomic uint64_t arm64_block_stats_chain_patches;
+
+void arm64_block_stats_set_enabled_from_env(const char *env) {
+    arm64_block_stats_enabled = env != NULL && env[0] != '\0' && strcmp(env, "0") != 0;
+}
+
+void arm64_block_stats_dump_if_enabled(void) {
+    if (!arm64_block_stats_enabled || arm64_block_stats_dumped)
+        return;
+    arm64_block_stats_dumped = true;
+    fprintf(stderr,
+            "ARM64_BLOCK_STATS entries=%llu cache_hits=%llu cache_misses=%llu compiled=%llu code_words=%llu guest_bytes=%llu jump0=%llu jump1=%llu chain_attempts=%llu chain_patches=%llu\n",
+            (unsigned long long)atomic_load_explicit(&arm64_block_stats_entries, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&arm64_block_stats_cache_hits, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&arm64_block_stats_cache_misses, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&arm64_block_stats_compiled, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&arm64_block_stats_code_words, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&arm64_block_stats_guest_bytes, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&arm64_block_stats_jump0, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&arm64_block_stats_jump1, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&arm64_block_stats_chain_attempts, memory_order_relaxed),
+            (unsigned long long)atomic_load_explicit(&arm64_block_stats_chain_patches, memory_order_relaxed));
+    fflush(stderr);
+}
+
+#define ARM64_BLOCK_STAT_INC(counter) do { \
+    if (arm64_block_stats_enabled) \
+        atomic_fetch_add_explicit(&(counter), 1, memory_order_relaxed); \
+} while (0)
+#define ARM64_BLOCK_STAT_ADD(counter, value) do { \
+    if (arm64_block_stats_enabled) \
+        atomic_fetch_add_explicit(&(counter), (uint64_t)(value), memory_order_relaxed); \
+} while (0)
+#else
+#define ARM64_BLOCK_STAT_INC(counter) do {} while (0)
+#define ARM64_BLOCK_STAT_ADD(counter, value) do {} while (0)
+#endif
+
 // Stubs / debug hooks referenced from assembly/gen.c/tlb.c
 // High-bit tracing is an opt-in diagnostic. It is useful when chasing W/X
 // register-extension bugs, but it is not a valid invariant for normal AArch64
@@ -567,6 +617,15 @@ static struct fiber_block *fiber_block_compile(addr_t ip, struct tlb *tlb) {
     }
     gen_end(&state);
     assert(state.ip - ip <= PAGE_SIZE);
+#ifdef GUEST_ARM64
+    ARM64_BLOCK_STAT_INC(arm64_block_stats_compiled);
+    ARM64_BLOCK_STAT_ADD(arm64_block_stats_code_words, state.size);
+    ARM64_BLOCK_STAT_ADD(arm64_block_stats_guest_bytes, state.ip - ip);
+    if (state.jump_ip[0] != 0)
+        ARM64_BLOCK_STAT_INC(arm64_block_stats_jump0);
+    if (state.jump_ip[1] != 0)
+        ARM64_BLOCK_STAT_INC(arm64_block_stats_jump1);
+#endif
     state.block->used = state.capacity;
     return state.block;
 }
@@ -678,7 +737,9 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
             jit_trace_regs(&frame->cpu);
         size_t cache_index = fiber_cache_hash(ip);
         struct fiber_block *block = cache[cache_index];
+        ARM64_BLOCK_STAT_INC(arm64_block_stats_entries);
         if (block == NULL || block->addr != ip) {
+            ARM64_BLOCK_STAT_INC(arm64_block_stats_cache_misses);
             lock(&asbestos->lock);
             block = fiber_lookup(asbestos, ip);
             if (block == NULL) {
@@ -689,12 +750,15 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
             }
             cache[cache_index] = block;
             unlock(&asbestos->lock);
+        } else {
+            ARM64_BLOCK_STAT_INC(arm64_block_stats_cache_hits);
         }
         struct fiber_block *last_block = frame->last_block;
         if (last_block != NULL &&
                 !last_block->is_jetsam && !block->is_jetsam &&
                 (last_block->jump_ip[0] != NULL ||
                  last_block->jump_ip[1] != NULL)) {
+            ARM64_BLOCK_STAT_INC(arm64_block_stats_chain_attempts);
             if (trylock(&asbestos->lock) == 0) {
                 // can't mint new pointers to a block that has been marked jetsam
                 // and is thus assumed to have no pointers left
@@ -703,6 +767,7 @@ static int cpu_step_to_interrupt(struct cpu_state *cpu, struct tlb *tlb) {
                         if (last_block->jump_ip[i] != NULL &&
                                 (*last_block->jump_ip[i] & 0xffffffff) == block->addr) {
                             *last_block->jump_ip[i] = (unsigned long) block->code;
+                            ARM64_BLOCK_STAT_INC(arm64_block_stats_chain_patches);
                             list_add(&block->jumps_from[i], &last_block->jumps_from_links[i]);
                         }
                     }
