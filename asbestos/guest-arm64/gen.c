@@ -181,6 +181,8 @@ extern void gadget_cbz_64(void);
 extern void gadget_cbz_32(void);
 extern void gadget_cbnz_64(void);
 extern void gadget_cbnz_32(void);
+extern void gadget_cbz_fallthrough_internal(void);
+extern void gadget_cbz_taken_internal(void);
 extern void gadget_tbz(void);
 extern void gadget_tbnz(void);
 extern void gadget_bcond(void);
@@ -2490,27 +2492,76 @@ static int gen_branch(struct gen_state *state, uint32_t insn) {
         unsigned long fake_target = (unsigned long)target | (1UL << 63);
         unsigned long fake_fallthrough = (unsigned long)state->ip | (1UL << 63);
 
-        if (rt != 31) {
-            // Fast path: specialized gadgets skip XZR check and sf check
-            void *gadget;
-            if (is_cbnz)
-                gadget = sf ? gadget_cbnz_64 : gadget_cbnz_32;
-            else
-                gadget = sf ? gadget_cbz_64 : gadget_cbz_32;
-            gen(state, (unsigned long) gadget);
-            gen(state, (uint64_t)rt);
-        } else {
-            // Fallback: generic gadget handles XZR (rt==31)
-            gen(state, (unsigned long)(is_cbnz ? gadget_cbnz : gadget_cbz));
-            gen(state, rt | ((uint64_t)sf << 8));
-        }
-        gen(state, fake_target);
-        gen(state, fake_fallthrough);
+        if (arm64_internal_continue_enabled && !state->internal_continue_used &&
+                state->internal_continue_count + 2 <= GEN_INTERNAL_CONTINUE_MAX &&
+                PAGE(state->ip) == PAGE(state->block->addr) &&
+                ((arm64_internal_continue_taken_enabled && PAGE(target) == PAGE(state->block->addr) &&
+                  target > state->ip && target - state->ip <= 8) || target < state->ip)) {
+            uint64_t op = rt | ((uint64_t)sf << 8) | ((uint64_t)is_cbnz << 9);
+            if (arm64_internal_continue_taken_enabled && PAGE(target) == PAGE(state->block->addr) &&
+                    target > state->ip && target - state->ip <= 8) {
+                // Taken edge continues through a private internal-continue record;
+                // fallthrough exits normally through fake-IP/block dispatch.
+                gen(state, (unsigned long) gadget_cbz_taken_internal);
+                gen(state, op);
+                unsigned internal_patch_ip = state->size;
+                gen(state, 0);
+                gen(state, fake_fallthrough);
+                state->jump_ip[0] = state->size - 1;  // external fallthrough
+                unsigned internal_continue_ip = state->size;
+                if (!gen_record_internal_continue_patch(state, internal_patch_ip, internal_continue_ip) ||
+                        !gen_emit_internal_continue_record(state, target)) {
+                    abort();
+                }
+                ARM64_FUSION_STAT_INC(arm64_internal_continue_count);
+                state->internal_continue_used = 1;
+                state->internal_continue_segment_start = target;
+                state->internal_continue_segment_budget = GEN_INTERNAL_CONTINUE_BUDGET_INSNS;
+                state->ip = target;
+                return 1;
+            }
 
-        // Record both jump targets for potential block chaining
-        state->jump_ip[0] = state->size - 2;  // target
-        state->jump_ip[1] = state->size - 1;  // fallthrough
-        return 0;
+            // Taken edge exits normally; fallthrough continues through a private
+            // internal-continue record. The only public chain slot is the target.
+            gen(state, (unsigned long) gadget_cbz_fallthrough_internal);
+            gen(state, op);
+            gen(state, fake_target);
+            state->jump_ip[0] = state->size - 1;  // external taken target
+            unsigned internal_patch_ip = state->size;
+            gen(state, 0);
+            unsigned internal_continue_ip = state->size;
+            if (!gen_record_internal_continue_patch(state, internal_patch_ip, internal_continue_ip) ||
+                    !gen_emit_internal_continue_record(state, state->ip)) {
+                abort();
+            }
+            ARM64_FUSION_STAT_INC(arm64_internal_continue_count);
+            state->internal_continue_used = 1;
+            state->internal_continue_segment_start = state->ip;
+            state->internal_continue_segment_budget = GEN_INTERNAL_CONTINUE_BUDGET_INSNS;
+            return 1;
+        } else {
+            if (rt != 31) {
+                // Fast path: specialized gadgets skip XZR check and sf check
+                void *gadget;
+                if (is_cbnz)
+                    gadget = sf ? gadget_cbnz_64 : gadget_cbnz_32;
+                else
+                    gadget = sf ? gadget_cbz_64 : gadget_cbz_32;
+                gen(state, (unsigned long) gadget);
+                gen(state, (uint64_t)rt);
+            } else {
+                // Fallback: generic gadget handles XZR (rt==31)
+                gen(state, (unsigned long)(is_cbnz ? gadget_cbnz : gadget_cbz));
+                gen(state, rt | ((uint64_t)sf << 8));
+            }
+            gen(state, fake_target);
+            gen(state, fake_fallthrough);
+
+            // Record both jump targets for potential block chaining
+            state->jump_ip[0] = state->size - 2;  // target
+            state->jump_ip[1] = state->size - 1;  // fallthrough
+            return 0;
+        }
     }
 
     // Test and branch (TBZ, TBNZ)

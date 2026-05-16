@@ -161,6 +161,10 @@ uintptr_t expected_internal_fault_pc;
 
 int ic_branch_fixture(int v);
 int ic_fallthrough_fixture(int v);
+int ic_cbz_taken_fixture(int v);
+int ic_cbnz_taken_fixture(int v);
+int ic_cbz_fallthrough_fixture(int v);
+int ic_cbnz_fallthrough_fixture(int v);
 int ic_call_adjacent_fixture(int v);
 void ic_internal_fault_fixture(int v);
 int ic_invalidation_fixture(int v);
@@ -177,6 +181,22 @@ __asm__(
 "    ret\n"
 "1:  mov w0, #11\n"
 "    ret\n"
+".global ic_cbz_taken_fixture\n"
+"ic_cbz_taken_fixture:\n"
+"    cbz w0, 1f\n"
+"    b 2f\n"
+"1:  mov w0, #11\n"
+"    ret\n"
+"2:  mov w0, #22\n"
+"    ret\n"
+".global ic_cbnz_taken_fixture\n"
+"ic_cbnz_taken_fixture:\n"
+"    cbnz w0, 1f\n"
+"    b 2f\n"
+"1:  mov w0, #11\n"
+"    ret\n"
+"2:  mov w0, #22\n"
+"    ret\n"
 ".global ic_fallthrough_fixture\n"
 "ic_fallthrough_fixture:\n"
 "    b 3f\n"
@@ -184,6 +204,22 @@ __asm__(
 "    ret\n"
 "3:  cmp w0, #0\n"
 "    b.eq 2b\n"
+"    mov w0, #11\n"
+"    ret\n"
+".global ic_cbz_fallthrough_fixture\n"
+"ic_cbz_fallthrough_fixture:\n"
+"    b 4f\n"
+"3:  mov w0, #22\n"
+"    ret\n"
+"4:  cbz w0, 3b\n"
+"    mov w0, #11\n"
+"    ret\n"
+".global ic_cbnz_fallthrough_fixture\n"
+"ic_cbnz_fallthrough_fixture:\n"
+"    b 6f\n"
+"5:  mov w0, #22\n"
+"    ret\n"
+"6:  cbnz w0, 5b\n"
 "    mov w0, #11\n"
 "    ret\n"
 ".global ic_call_adjacent_fixture\n"
@@ -272,6 +308,46 @@ static int fallthrough_fixture(void) {
     return 0;
 }
 
+static int cbz_taken_fixture(void) {
+    int fail = 0;
+    for (int i = 0; i < 64; i++) {
+        if (ic_cbz_taken_fixture(0) != 11)
+            fail++;
+        if (ic_cbz_taken_fixture(1) != 22)
+            fail++;
+        if (ic_cbnz_taken_fixture(0) != 22)
+            fail++;
+        if (ic_cbnz_taken_fixture(1) != 11)
+            fail++;
+    }
+    if (fail) {
+        printf("cbz-taken-fail %d\n", fail);
+        return 1;
+    }
+    puts("cbz-taken-ok");
+    return 0;
+}
+
+static int cbz_fallthrough_fixture(void) {
+    int fail = 0;
+    for (int i = 0; i < 64; i++) {
+        if (ic_cbz_fallthrough_fixture(0) != 22)
+            fail++;
+        if (ic_cbz_fallthrough_fixture(1) != 11)
+            fail++;
+        if (ic_cbnz_fallthrough_fixture(0) != 11)
+            fail++;
+        if (ic_cbnz_fallthrough_fixture(1) != 22)
+            fail++;
+    }
+    if (fail) {
+        printf("cbz-fallthrough-fail %d\n", fail);
+        return 1;
+    }
+    puts("cbz-fallthrough-ok");
+    return 0;
+}
+
 static int call_adjacent_fixture(void) {
     int fail = 0;
     for (int i = 0; i < 64; i++) {
@@ -340,13 +416,17 @@ static int fault_fixture(void) {
 
 int main(int argc, char **argv) {
     if (argc != 2) {
-        fprintf(stderr, "usage: %s branch|fallthrough|call|fault|invalidation\n", argv[0]);
+        fprintf(stderr, "usage: %s branch|fallthrough|cbz-taken|cbz-fallthrough|call|fault|invalidation\n", argv[0]);
         return 2;
     }
     if (strcmp(argv[1], "branch") == 0)
         return branch_fixture();
     if (strcmp(argv[1], "fallthrough") == 0)
         return fallthrough_fixture();
+    if (strcmp(argv[1], "cbz-taken") == 0)
+        return cbz_taken_fixture();
+    if (strcmp(argv[1], "cbz-fallthrough") == 0)
+        return cbz_fallthrough_fixture();
     if (strcmp(argv[1], "call") == 0)
         return call_adjacent_fixture();
     if (strcmp(argv[1], "fault") == 0)
@@ -372,6 +452,8 @@ main() {
     run_host_test "stats-only default-off fixture" "ISH_ARM64_FUSION_STATS=1" "cd '$GUEST_WORK' && ./internal_continue_fixture branch" stats-zero "branch-ok"
     run_host_test "opt-in branch taken-internal fixture" "ISH_ARM64_FUSION_STATS=1 ISH_ARM64_INTERNAL_CONTINUE=1 ISH_ARM64_INTERNAL_CONTINUE_TAKEN=1" "cd '$GUEST_WORK' && ./internal_continue_fixture branch" stats-positive "branch-ok"
     run_host_test "opt-in branch fallthrough-internal fixture" "ISH_ARM64_FUSION_STATS=1 ISH_ARM64_INTERNAL_CONTINUE=1" "cd '$GUEST_WORK' && ./internal_continue_fixture fallthrough" stats-positive "fallthrough-ok"
+    run_host_test "opt-in cbz/cbnz taken-internal fixture" "ISH_ARM64_FUSION_STATS=1 ISH_ARM64_INTERNAL_CONTINUE=1 ISH_ARM64_INTERNAL_CONTINUE_TAKEN=1" "cd '$GUEST_WORK' && ./internal_continue_fixture cbz-taken" stats-positive "cbz-taken-ok"
+    run_host_test "opt-in cbz/cbnz fallthrough-internal fixture" "ISH_ARM64_FUSION_STATS=1 ISH_ARM64_INTERNAL_CONTINUE=1" "cd '$GUEST_WORK' && ./internal_continue_fixture cbz-fallthrough" stats-positive "cbz-fallthrough-ok"
     run_host_test "default same-page invalidation fixture" "" "cd '$GUEST_WORK' && ./internal_continue_fixture invalidation" exact "invalidation-ok"
     run_host_test "opt-in same-page invalidation fixture" "ISH_ARM64_FUSION_STATS=1 ISH_ARM64_INTERNAL_CONTINUE=1" "cd '$GUEST_WORK' && ./internal_continue_fixture invalidation" stats-positive "invalidation-ok"
     run_host_test "opt-in call-adjacent fixture" "ISH_ARM64_FUSION_STATS=1 ISH_ARM64_INTERNAL_CONTINUE=1" "cd '$GUEST_WORK' && ./internal_continue_fixture call" stats-positive "call-adjacent-ok"
