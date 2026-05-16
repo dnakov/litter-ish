@@ -15,6 +15,7 @@ REPORT="$REPORT_DIR/ish-arm64-cli-corner-smoke-$STAMP.md"
 HOST_TMP="$(mktemp -d)"
 LANE_NAME=default
 PASS_COUNT=0
+UNSUPPORTED_COUNT=0
 FAIL_COUNT=0
 TOTAL_COUNT=0
 REPORT_ROWS=""
@@ -166,6 +167,51 @@ run_optional_tool() {
     esac
 }
 
+run_optional_tool_with_unsupported() {
+    local stage="$1"
+    local name="$2"
+    local pkg_spec="$3"
+    local cmd="$4"
+    local smoke_cmd="$5"
+    local pass_marker="$6"
+    local unsupported_marker="$7"
+    local status safe_name out detail
+    status="$(install_if_available "$pkg_spec" "$cmd")"
+    case "$status" in
+        present:*|installed:*)
+            safe_name="${LANE_NAME}-${stage}-${name}"
+            safe_name="${safe_name//[^A-Za-z0-9._-]/_}"
+            out="$HOST_TMP/$safe_name.out"
+            TOTAL_COUNT=$((TOTAL_COUNT + 1))
+            printf '[%s/%s] %s ... ' "$LANE_NAME" "$stage" "$name"
+            guest_capture "$smoke_cmd" >"$out" 2>&1 || true
+            detail="$(grep -v '^__ISH_STATUS:' "$out" | sed -n '1,24p' | sed 's/|/\\|/g')"
+            if grep -q '^__ISH_STATUS:0$' "$out" && grep -Eq "$pass_marker" "$out" && ! grep -Eq 'SAFETY-VALVE|V8_SIG|SIGSEGV|SIGBUS|Trace/breakpoint trap|Assertion failed' "$out"; then
+                PASS_COUNT=$((PASS_COUNT + 1))
+                echo PASS
+                append_row "$stage" "$name" PASS "$detail"
+            elif grep -q '^__ISH_STATUS:0$' "$out" && grep -Eq "$unsupported_marker" "$out"; then
+                UNSUPPORTED_COUNT=$((UNSUPPORTED_COUNT + 1))
+                echo UNSUPPORTED
+                append_row "$stage" "$name" UNSUPPORTED "$detail"
+            else
+                FAIL_COUNT=$((FAIL_COUNT + 1))
+                echo FAIL
+                append_row "$stage" "$name" FAIL "$detail"
+            fi
+            ;;
+        unavailable:*)
+            TOTAL_COUNT=$((TOTAL_COUNT + 1))
+            UNSUPPORTED_COUNT=$((UNSUPPORTED_COUNT + 1))
+            printf '[%s/%s] %s ... UNSUPPORTED\n' "$LANE_NAME" "$stage" "$name"
+            append_row "$stage" "$name" UNSUPPORTED "$status"
+            ;;
+        install-failed:*)
+            run_test "$stage" "$name install" "echo '$status'; false"
+            ;;
+    esac
+}
+
 write_report() {
     cat >"$REPORT" <<EOF_REPORT
 # ARM64 CLI corner-case smoke report
@@ -180,6 +226,7 @@ write_report() {
 
 - Total: $TOTAL_COUNT
 - Passed: $PASS_COUNT
+- Unsupported: $UNSUPPORTED_COUNT
 - Failed: $FAIL_COUNT
 
 ## Results
@@ -223,8 +270,8 @@ run_lane() {
 
     run_optional_tool container "docker version" "docker-cli|docker.io" docker "docker --version | sed -n '1s/.*/docker-version-ok/p'" "docker-version-ok"
     run_optional_tool container "docker daemon version" "docker|docker.io" dockerd "dockerd --version | sed -n '1s/.*/docker-daemon-version-ok/p'" "docker-daemon-version-ok"
-    run_optional_tool container "docker daemon startup" "docker|docker.io" dockerd "rm -rf /tmp/cli-corner-smoke/docker-daemon; mkdir -p /tmp/cli-corner-smoke/docker-daemon/root /tmp/cli-corner-smoke/docker-daemon/exec; dockerd --iptables=false --bridge=none --storage-driver=vfs --data-root /tmp/cli-corner-smoke/docker-daemon/root --exec-root /tmp/cli-corner-smoke/docker-daemon/exec --pidfile /tmp/cli-corner-smoke/docker-daemon/docker.pid --host unix:///tmp/cli-corner-smoke/docker-daemon/docker.sock >/tmp/cli-corner-smoke/dockerd.out 2>&1 & pid=\$!; sleep 8; if kill -0 \$pid 2>/dev/null; then docker -H unix:///tmp/cli-corner-smoke/docker-daemon/docker.sock version >/tmp/cli-corner-smoke/docker-daemon-version.out 2>&1 && echo docker-daemon-started-ok || { kill \$pid 2>/dev/null || true; wait \$pid 2>/dev/null || true; cat /tmp/cli-corner-smoke/docker-daemon-version.out; exit 1; }; kill \$pid 2>/dev/null || true; wait \$pid 2>/dev/null || true; elif grep -Eqi 'operation not permitted|permission denied|not supported|cgroup|namespace|mount|iptables|modprobe|failed to start daemon|error starting daemon|no such file or directory|read-only file system' /tmp/cli-corner-smoke/dockerd.out; then echo docker-daemon-unsupported-ok; else cat /tmp/cli-corner-smoke/dockerd.out; wait \$pid; fi" "docker-daemon-started-ok\|docker-daemon-unsupported-ok"
-    run_optional_tool container "docker run hello-world" "docker-cli|docker.io" docker "rm -f /tmp/cli-corner-smoke/docker-hello.out; docker run --rm hello-world >/tmp/cli-corner-smoke/docker-hello.out 2>&1; rc=\$?; if [ \$rc -eq 0 ] && grep -qi 'Hello from Docker' /tmp/cli-corner-smoke/docker-hello.out; then echo docker-hello-world-ok; elif grep -Eqi 'Cannot connect to the Docker daemon|Is the docker daemon running|No such file or directory' /tmp/cli-corner-smoke/docker-hello.out; then echo docker-daemon-unavailable-ok; else cat /tmp/cli-corner-smoke/docker-hello.out; exit \$rc; fi" "docker-hello-world-ok\|docker-daemon-unavailable-ok"
+    run_optional_tool_with_unsupported container "docker daemon startup" "docker|docker.io" dockerd "rm -rf /tmp/cli-corner-smoke/docker-daemon; mkdir -p /tmp/cli-corner-smoke/docker-daemon/root /tmp/cli-corner-smoke/docker-daemon/exec; dockerd --iptables=false --bridge=none --storage-driver=vfs --data-root /tmp/cli-corner-smoke/docker-daemon/root --exec-root /tmp/cli-corner-smoke/docker-daemon/exec --pidfile /tmp/cli-corner-smoke/docker-daemon/docker.pid --host unix:///tmp/cli-corner-smoke/docker-daemon/docker.sock >/tmp/cli-corner-smoke/dockerd.out 2>&1 & pid=\$!; sleep 8; if kill -0 \$pid 2>/dev/null; then docker -H unix:///tmp/cli-corner-smoke/docker-daemon/docker.sock version >/tmp/cli-corner-smoke/docker-daemon-version.out 2>&1 && echo docker-daemon-started-ok || { kill \$pid 2>/dev/null || true; wait \$pid 2>/dev/null || true; cat /tmp/cli-corner-smoke/docker-daemon-version.out; exit 1; }; kill \$pid 2>/dev/null || true; wait \$pid 2>/dev/null || true; elif grep -Eqi 'operation not permitted|permission denied|not supported|cgroup|namespace|mount|iptables|modprobe|failed to start daemon|error starting daemon|no such file or directory|read-only file system' /tmp/cli-corner-smoke/dockerd.out; then echo docker-daemon-unsupported-ok; else cat /tmp/cli-corner-smoke/dockerd.out; wait \$pid; fi" "docker-daemon-started-ok" "docker-daemon-unsupported-ok"
+    run_optional_tool_with_unsupported container "docker run hello-world" "docker-cli|docker.io" docker "rm -f /tmp/cli-corner-smoke/docker-hello.out; docker run --rm hello-world >/tmp/cli-corner-smoke/docker-hello.out 2>&1; rc=\$?; if [ \$rc -eq 0 ] && grep -qi 'Hello from Docker' /tmp/cli-corner-smoke/docker-hello.out; then echo docker-hello-world-ok; elif grep -Eqi 'Cannot connect to the Docker daemon|Is the docker daemon running|No such file or directory' /tmp/cli-corner-smoke/docker-hello.out; then echo docker-daemon-unavailable-ok; else cat /tmp/cli-corner-smoke/docker-hello.out; exit \$rc; fi" "docker-hello-world-ok" "docker-daemon-unavailable-ok"
 
     run_optional_tool diagnostics "strace true" "strace|strace" strace "strace -o /tmp/cli-corner-smoke/strace.log true >/tmp/cli-corner-smoke/strace.out 2>&1 && test -s /tmp/cli-corner-smoke/strace.log && echo strace-ok || { grep -q 'PTRACE_SETOPTIONS' /tmp/cli-corner-smoke/strace.out && echo strace-ok; }" "strace-ok"
     run_optional_tool diagnostics "lsof self" "lsof|lsof" lsof "lsof -p \$\$ >/dev/null 2>&1; echo lsof-ok" "lsof-ok"

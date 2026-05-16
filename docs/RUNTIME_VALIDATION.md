@@ -46,7 +46,7 @@ Run the CLI corner-case smoke suite for optional shells, TUI tools, network diag
 make test-arm64-cli-corner-smoke ROOTFS_LANES=alpine=$(pwd)/alpine-arm64-fakefs REPORT_DIR=/workspace/tmp TIMEOUT_S=240 INSTALL_TIMEOUT_S=1200
 ```
 
-Latest CLI corner result: **29 / 29 passing** at `/workspace/tmp/ish-arm64-cli-corner-smoke-20260516-213241.md`. This includes `htop` and `btop` launched inside `tmux`, Docker CLI version, `dockerd --version`, bounded Docker daemon startup as an explicit unsupported diagnostic, Docker `hello-world` as an explicit daemon-unavailable diagnostic, direct `curl https://github.com`, direct HTTPS `git ls-remote`, and a real `rcarmo/go-gte` HTTPS clone without an `/etc/hosts` workaround after the UDP `recvfrom()` sockaddr-length compatibility fix.
+Latest CLI corner result: **27 passing, 2 unsupported, 0 failed** at `/workspace/tmp/ish-arm64-cli-corner-smoke-20260516-223418.md`. This includes `htop` and `btop` launched inside `tmux`, Docker CLI version and `dockerd --version` as passing rows, bounded Docker daemon startup as `UNSUPPORTED`, Docker `hello-world` as `UNSUPPORTED` when no daemon is available, direct `curl https://github.com`, direct HTTPS `git ls-remote`, and a real `rcarmo/go-gte` HTTPS clone without an `/etc/hosts` workaround after the UDP `recvfrom()` sockaddr-length compatibility fix.
 
 Run the separate AI CLI coverage suite:
 
