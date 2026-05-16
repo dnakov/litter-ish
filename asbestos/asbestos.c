@@ -743,6 +743,14 @@ static struct fiber_block *fiber_block_compile(addr_t ip, struct tlb *tlb) {
         // guarantee that by stopping as soon as there's less space left than
         // the maximum length of an x86 instruction
         // TODO refuse to decode instructions longer than 15 bytes
+#ifdef GUEST_ARM64
+        if (state.internal_continue_segment_budget != 0 &&
+                state.ip - state.internal_continue_segment_start >=
+                    state.internal_continue_segment_budget * 4) {
+            gen_exit(&state);
+            break;
+        }
+#endif
         if (state.ip - ip >= PAGE_SIZE - 15) {
             gen_exit(&state);
             break;

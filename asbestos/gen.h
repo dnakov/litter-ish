@@ -7,6 +7,7 @@
 #include "emu/tlb.h"
 
 #define GEN_INTERNAL_CONTINUE_MAX 4
+#define GEN_INTERNAL_CONTINUE_BUDGET_INSNS 8
 
 struct gen_state {
     addr_t ip;
@@ -24,6 +25,9 @@ struct gen_state {
     unsigned internal_continue_count;
     unsigned internal_continue_patch_ip[GEN_INTERNAL_CONTINUE_MAX];
     unsigned internal_continue_target_ip[GEN_INTERNAL_CONTINUE_MAX];
+    unsigned internal_continue_used;
+    addr_t internal_continue_segment_start;
+    unsigned internal_continue_segment_budget;
     uint32_t last_insn;
     struct tlb *tlb; // for peephole optimization (peek at next instruction)
     unsigned b_follow_depth; // how many unconditional B's we've followed inline

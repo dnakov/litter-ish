@@ -623,6 +623,96 @@ bcond_not_taken_unchained:
     b fiber_ret_chain
 
 /*
+ * Conditional branch with external taken edge and internal fallthrough edge.
+ * Code stream: [gadget addr][cond][fake_target][internal_continue_ptr]
+ *
+ * The taken edge uses the normal external fake-IP/block->code chain path.
+ * The not-taken edge jumps to a private internal-continue record and never
+ * passes the interior pointer to fiber_ret_chain.
+ */
+.gadget bcond_fallthrough_internal
+    ldr x8, [_pc], #8       // cond
+    ldr x9, [_pc], #8       // taken target (fake_ip or chained)
+    ldr x10, [_pc]          // internal_continue record pointer
+
+    and x8, x8, #0xf
+    adr x11, bcond_fallthrough_internal_table
+    add x11, x11, x8, lsl #2
+    load_flags
+    br x11
+
+    .align 2
+bcond_fallthrough_internal_table:
+    b bcond_fi_eq
+    b bcond_fi_ne
+    b bcond_fi_cs
+    b bcond_fi_cc
+    b bcond_fi_mi
+    b bcond_fi_pl
+    b bcond_fi_vs
+    b bcond_fi_vc
+    b bcond_fi_hi
+    b bcond_fi_ls
+    b bcond_fi_ge
+    b bcond_fi_lt
+    b bcond_fi_gt
+    b bcond_fi_le
+    b bcond_fi_taken
+    b bcond_fi_taken
+bcond_fi_eq:
+    b.eq bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_ne:
+    b.ne bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_cs:
+    b.cs bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_cc:
+    b.cc bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_mi:
+    b.mi bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_pl:
+    b.pl bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_vs:
+    b.vs bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_vc:
+    b.vc bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_hi:
+    b.hi bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_ls:
+    b.ls bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_ge:
+    b.ge bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_lt:
+    b.lt bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_gt:
+    b.gt bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_le:
+    b.le bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_taken:
+    inline_chain x9, bcond_fi_taken_unchained
+bcond_fi_taken_unchained:
+    and x11, x9, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x9
+    b fiber_ret_chain
+bcond_fi_not_taken:
+    mov _pc, x10
+    gret
+
+/*
  * System call (SVC)
  * Code stream: [gadget addr][next_pc (64-bit)]
  *

@@ -37,6 +37,7 @@ extern void gadget_trace(void);
 extern void gadget_check_highbits(void);
 
 static bool arm64_fusion_stats_enabled;
+static bool arm64_internal_continue_enabled;
 static uint64_t arm64_fusion_cmp_bcond_count;
 static uint64_t arm64_fusion_subs_bcond_count;
 static uint64_t arm64_fusion_adrp_add_count;
@@ -67,6 +68,7 @@ static uint64_t arm64_fusion_ldr64_sp_cbz64_candidate_count;
 static uint64_t arm64_fusion_ldr32_sx_cbz64_candidate_count;
 static uint64_t arm64_fusion_ldr16_sx_cbz_candidate_count;
 static uint64_t arm64_fusion_ldr8_sx_cbz_candidate_count;
+static uint64_t arm64_internal_continue_count;
 static bool arm64_fusion_stats_dumped;
 
 void arm64_fusion_stats_dump_if_enabled(void) {
@@ -74,7 +76,7 @@ void arm64_fusion_stats_dump_if_enabled(void) {
         return;
     arm64_fusion_stats_dumped = true;
     fprintf(stderr,
-            "ARM64_FUSION_STATS cmp_bcond=%llu subs_bcond=%llu adrp_add=%llu adrp_ldr64=%llu addsub_fast=%llu addsub_cbz=%llu addsub_ldr64=%llu addsub_ldr32=%llu addsub_ldr16=%llu addsub_ldr8=%llu addsub_str64=%llu addsub_str32=%llu addsub_str16=%llu addsub_str8=%llu ldr64_cbz64=%llu ldr64_sp_cbz64=%llu ldr32_sx_cbz64=%llu ldr16_sx_cbz=%llu ldr8_sx_cbz=%llu ldr32_cbz32=%llu ldr16_cbz32=%llu ldr8_cbz32=%llu addsub_ldr_cand=%llu addsub_str_cand=%llu ldr_cbz_cand=%llu ldr64_cbz64_cand=%llu ldr64_sp_cbz64_cand=%llu ldr32_sx_cbz64_cand=%llu ldr16_sx_cbz_cand=%llu ldr8_sx_cbz_cand=%llu\n",
+            "ARM64_FUSION_STATS cmp_bcond=%llu subs_bcond=%llu adrp_add=%llu adrp_ldr64=%llu addsub_fast=%llu addsub_cbz=%llu addsub_ldr64=%llu addsub_ldr32=%llu addsub_ldr16=%llu addsub_ldr8=%llu addsub_str64=%llu addsub_str32=%llu addsub_str16=%llu addsub_str8=%llu ldr64_cbz64=%llu ldr64_sp_cbz64=%llu ldr32_sx_cbz64=%llu ldr16_sx_cbz=%llu ldr8_sx_cbz=%llu ldr32_cbz32=%llu ldr16_cbz32=%llu ldr8_cbz32=%llu addsub_ldr_cand=%llu addsub_str_cand=%llu ldr_cbz_cand=%llu ldr64_cbz64_cand=%llu ldr64_sp_cbz64_cand=%llu ldr32_sx_cbz64_cand=%llu ldr16_sx_cbz_cand=%llu ldr8_sx_cbz_cand=%llu internal_continue=%llu\n",
             (unsigned long long)arm64_fusion_cmp_bcond_count,
             (unsigned long long)arm64_fusion_subs_bcond_count,
             (unsigned long long)arm64_fusion_adrp_add_count,
@@ -104,12 +106,17 @@ void arm64_fusion_stats_dump_if_enabled(void) {
             (unsigned long long)arm64_fusion_ldr64_sp_cbz64_candidate_count,
             (unsigned long long)arm64_fusion_ldr32_sx_cbz64_candidate_count,
             (unsigned long long)arm64_fusion_ldr16_sx_cbz_candidate_count,
-            (unsigned long long)arm64_fusion_ldr8_sx_cbz_candidate_count);
+            (unsigned long long)arm64_fusion_ldr8_sx_cbz_candidate_count,
+            (unsigned long long)arm64_internal_continue_count);
     fflush(stderr);
 }
 
 void arm64_fusion_stats_set_enabled_from_env(const char *env) {
     arm64_fusion_stats_enabled = env != NULL && env[0] != '\0' && strcmp(env, "0") != 0;
+}
+
+void arm64_internal_continue_set_enabled_from_env(const char *env) {
+    arm64_internal_continue_enabled = env != NULL && env[0] != '\0' && strcmp(env, "0") != 0;
 }
 
 #define ARM64_FUSION_STAT_INC(counter) do { \
@@ -238,6 +245,8 @@ extern void gadget_bcond_ge(void);
 extern void gadget_bcond_lt(void);
 extern void gadget_bcond_gt(void);
 extern void gadget_bcond_le(void);
+extern void gadget_bcond_fallthrough_internal(void);
+extern void gadget_internal_continue(void);
 
 // Fused CMP-imm + B.cond gadgets (rd=31, CMP only sets flags)
 extern void gadget_fused_cmp_bcond_eq(void);
@@ -947,6 +956,25 @@ static void gen(struct gen_state *state, unsigned long thing) {
     state->block->code[state->size++] = thing;
 }
 
+static bool gen_record_internal_continue_patch(struct gen_state *state, unsigned patch_ip, unsigned target_ip) {
+    if (state->internal_continue_count >= GEN_INTERNAL_CONTINUE_MAX)
+        return false;
+    unsigned i = state->internal_continue_count++;
+    state->internal_continue_patch_ip[i] = patch_ip;
+    state->internal_continue_target_ip[i] = target_ip;
+    return true;
+}
+
+static bool gen_emit_internal_continue_record(struct gen_state *state, addr_t guest_pc) {
+    if (state->internal_continue_count >= GEN_INTERNAL_CONTINUE_MAX)
+        return false;
+    gen(state, (unsigned long) gadget_internal_continue);
+    gen(state, guest_pc);
+    unsigned patch_ip = state->size;
+    gen(state, 0);
+    return gen_record_internal_continue_patch(state, patch_ip, state->size);
+}
+
 // Generate interrupt and end the block
 static void gen_interrupt(struct gen_state *state, int interrupt_type) {
     // Set guest PC to the faulting instruction so signal handlers see the correct address
@@ -967,6 +995,9 @@ void gen_start(addr_t addr, struct gen_state *state) {
     }
     state->block_patch_ip = 0;
     state->internal_continue_count = 0;
+    state->internal_continue_used = 0;
+    state->internal_continue_segment_start = 0;
+    state->internal_continue_segment_budget = 0;
     for (int i = 0; i < GEN_INTERNAL_CONTINUE_MAX; i++) {
         state->internal_continue_patch_ip[i] = 0;
         state->internal_continue_target_ip[i] = 0;
@@ -2384,6 +2415,28 @@ static int gen_branch(struct gen_state *state, uint32_t insn) {
             gen(state, (unsigned long) gadget_branch);
             gen(state, fake_target);
             state->jump_ip[0] = state->size - 1;
+        } else if (arm64_internal_continue_enabled && !state->internal_continue_used &&
+                   state->internal_continue_count + 2 <= GEN_INTERNAL_CONTINUE_MAX &&
+                   PAGE(state->ip) == PAGE(state->block->addr)) {
+            // Phase 3B first prototype: taken edge exits normally; fallthrough
+            // continues through a private internal-continue record. The only
+            // public chain slot remains the external fake target.
+            gen(state, (unsigned long) gadget_bcond_fallthrough_internal);
+            gen(state, cond);
+            gen(state, fake_target);
+            state->jump_ip[0] = state->size - 1;  // external taken target
+            unsigned internal_patch_ip = state->size;
+            gen(state, 0);
+            unsigned internal_continue_ip = state->size;
+            if (!gen_record_internal_continue_patch(state, internal_patch_ip, internal_continue_ip) ||
+                    !gen_emit_internal_continue_record(state, state->ip)) {
+                abort();
+            }
+            ARM64_FUSION_STAT_INC(arm64_internal_continue_count);
+            state->internal_continue_used = 1;
+            state->internal_continue_segment_start = state->ip;
+            state->internal_continue_segment_budget = GEN_INTERNAL_CONTINUE_BUDGET_INSNS;
+            return 1;
         } else {
             // Per-condition gadget: code stream is [gadget][target][fallthrough]
             gen(state, (unsigned long) bcond_gadgets[cond]);
