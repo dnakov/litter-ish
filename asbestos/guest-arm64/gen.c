@@ -44,6 +44,7 @@ static uint64_t arm64_fusion_adrp_ldr64_count;
 static uint64_t arm64_fusion_addsub_fast_count;
 static uint64_t arm64_fusion_addsub_cbz_count;
 static uint64_t arm64_fusion_addsub_ldr64_count;
+static uint64_t arm64_fusion_addsub_ldr32_count;
 static uint64_t arm64_fusion_addsub_str64_count;
 static uint64_t arm64_fusion_ldr64_cbz64_count;
 static uint64_t arm64_fusion_addsub_ldr_candidate_count;
@@ -57,7 +58,7 @@ void arm64_fusion_stats_dump_if_enabled(void) {
         return;
     arm64_fusion_stats_dumped = true;
     fprintf(stderr,
-            "ARM64_FUSION_STATS cmp_bcond=%llu subs_bcond=%llu adrp_add=%llu adrp_ldr64=%llu addsub_fast=%llu addsub_cbz=%llu addsub_ldr64=%llu addsub_str64=%llu ldr64_cbz64=%llu addsub_ldr_cand=%llu addsub_str_cand=%llu ldr_cbz_cand=%llu ldr64_cbz64_cand=%llu\n",
+            "ARM64_FUSION_STATS cmp_bcond=%llu subs_bcond=%llu adrp_add=%llu adrp_ldr64=%llu addsub_fast=%llu addsub_cbz=%llu addsub_ldr64=%llu addsub_ldr32=%llu addsub_str64=%llu ldr64_cbz64=%llu addsub_ldr_cand=%llu addsub_str_cand=%llu ldr_cbz_cand=%llu ldr64_cbz64_cand=%llu\n",
             (unsigned long long)arm64_fusion_cmp_bcond_count,
             (unsigned long long)arm64_fusion_subs_bcond_count,
             (unsigned long long)arm64_fusion_adrp_add_count,
@@ -65,6 +66,7 @@ void arm64_fusion_stats_dump_if_enabled(void) {
             (unsigned long long)arm64_fusion_addsub_fast_count,
             (unsigned long long)arm64_fusion_addsub_cbz_count,
             (unsigned long long)arm64_fusion_addsub_ldr64_count,
+            (unsigned long long)arm64_fusion_addsub_ldr32_count,
             (unsigned long long)arm64_fusion_addsub_str64_count,
             (unsigned long long)arm64_fusion_ldr64_cbz64_count,
             (unsigned long long)arm64_fusion_addsub_ldr_candidate_count,
@@ -163,6 +165,7 @@ extern void gadget_subs_imm_32(void);
 extern void gadget_fused_addsub_cbz(void);
 extern void gadget_fused_addsub_cbnz(void);
 extern void gadget_fused_addsub_ldr64_imm(void);
+extern void gadget_fused_addsub_ldr32_imm(void);
 extern void gadget_fused_addsub_str64_imm(void);
 extern void gadget_fused_ldr64_cbz_imm(void);
 extern void gadget_fused_ldr64_cbnz_imm(void);
@@ -1434,6 +1437,35 @@ static int try_fuse_addsub_ldr64(struct gen_state *state, uint32_t op, uint32_t 
     return 1;
 }
 
+static int try_fuse_addsub_ldr32(struct gen_state *state, uint32_t op, uint32_t rd,
+                                 uint32_t rn, uint32_t imm12) {
+    if (PAGE(state->orig_ip) != PAGE(state->ip))
+        return -1;
+
+    uint32_t next_insn;
+    if (!gen_peek_next_insn(state, &next_insn))
+        return -1;
+
+    bool is_load, sign_extend;
+    uint32_t mem_rn, mem_rt, mem_size;
+    if (!arm64_decode_int_unsigned_imm_ldst(next_insn, &is_load, &sign_extend, &mem_rn, &mem_rt, &mem_size))
+        return -1;
+    if (!is_load || sign_extend || mem_size != 2 || mem_rn != rd || mem_rt == 31)
+        return -1;
+
+    uint32_t ldr_imm12 = (next_insn >> 10) & 0xfff;
+    addr_t ldr_pc = state->ip;
+    state->ip += 4;
+
+    ARM64_FUSION_STAT_INC(arm64_fusion_addsub_ldr32_count);
+    gen(state, (unsigned long)gadget_fused_addsub_ldr32_imm);
+    gen(state, rd | (rn << 8) | ((uint64_t)imm12 << 16) |
+               ((uint64_t)op << 28) | ((uint64_t)mem_rt << 32) |
+               ((uint64_t)ldr_imm12 << 40));
+    gen(state, (unsigned long)ldr_pc);
+    return 1;
+}
+
 static int try_fuse_addsub_str64(struct gen_state *state, uint32_t op, uint32_t rd,
                                  uint32_t rn, uint32_t imm12) {
     if (PAGE(state->orig_ip) != PAGE(state->ip))
@@ -1601,6 +1633,8 @@ static int gen_dp_imm(struct gen_state *state, uint32_t insn) {
             if (fused == 0) return 0;  // fused and block ended
             count_addsub_ldst_candidates(state, rd);
             if (sf && try_fuse_addsub_ldr64(state, op, rd, rn, imm12) == 1)
+                return 1;
+            if (sf && try_fuse_addsub_ldr32(state, op, rd, rn, imm12) == 1)
                 return 1;
             if (sf && try_fuse_addsub_str64(state, op, rd, rn, imm12) == 1)
                 return 1;

@@ -1870,6 +1870,51 @@ fused_addsub_ldr64_store_base:
     read_bullshit 64, fused_addsub_ldr64_imm_1
 
 /*
+ * Fused ADD/SUB (immediate, 64-bit, no flags) + LDR Wt, [Xd, #imm]
+ * Code stream: [gadget addr]
+ *              [rd | add_rn<<8 | add_imm12<<16 | op<<28 | ldr_rt<<32 | ldr_imm12<<40]
+ *              [ldr_guest_pc]
+ * Stores the ADD/SUB result before the load, matching architectural ordering
+ * if the load faults. The LDR guest PC is written to LOCAL_jit_saved_pc before
+ * the faultable memory access so guest signals report the precise LDR PC. The
+ * 32-bit load result is zero-extended into the architectural X register.
+ */
+.gadget fused_addsub_ldr32_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC for fault recovery
+    add _pc, _pc, #16
+
+    and x9, x22, #0x1f          // rd = ADD/SUB destination and LDR base
+    ubfx x10, x22, #8, #5       // add/sub rn
+    ubfx x11, x22, #16, #12     // add/sub imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x10, lsl #3]
+    tbnz x22, #28, fused_addsub_ldr32_sub
+    add x16, x15, x11
+    b fused_addsub_ldr32_store_base
+fused_addsub_ldr32_sub:
+    sub x16, x15, x11
+fused_addsub_ldr32_store_base:
+    str x16, [x14, x9, lsl #3]  // ADD/SUB side effect is visible before LDR
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x10, x22, #40, #12     // LDR imm12, scaled by 4
+    lsl x10, x10, #2
+    add _addr, x16, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 32, fused_addsub_ldr32_imm_1
+    ldr w0, [_addr]
+
+    ubfx x8, x22, #32, #5       // ldr_rt
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]   // zero-extended 32→64
+    mov _addr, x24
+    gret
+    read_bullshit 32, fused_addsub_ldr32_imm_1
+
+/*
  * Fused ADD/SUB (immediate, 64-bit, no flags) + STR Xt, [Xd, #imm]
  * Code stream: [gadget addr]
  *              [rd | add_rn<<8 | add_imm12<<16 | op<<28 | str_rt<<32 | str_imm12<<40]
