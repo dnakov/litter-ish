@@ -11,6 +11,8 @@
 #import "UIApplication+OpenURL.h"
 #import "NSObject+SaneKVO.h"
 
+#include <math.h>
+
 struct rowcol {
     int row;
     int col;
@@ -256,14 +258,22 @@ static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight",
             [self becomeFirstResponder];
         }
     } else if ([message.name isEqualToString:@"newScrollHeight"]) {
-        self.scrollbarView.contentSize = CGSizeMake(0, [message.body doubleValue]);
+        if (![message.body isKindOfClass:NSNumber.class])
+            return;
+        CGFloat newHeight = [message.body doubleValue];
+        if (!isfinite(newHeight) || newHeight < 0)
+            return;
+        self.scrollbarView.contentSize = CGSizeMake(0, newHeight);
     } else if ([message.name isEqualToString:@"newScrollTop"]) {
+        if (![message.body isKindOfClass:NSNumber.class])
+            return;
         CGFloat newOffset = [message.body doubleValue];
-        if (self.scrollbarView.contentOffset.y == newOffset)
+        if (!isfinite(newOffset) || newOffset < 0 || self.scrollbarView.contentOffset.y == newOffset)
             return;
         [self.scrollbarView setContentOffset:CGPointMake(0, newOffset) animated:NO];
     } else if ([message.name isEqualToString:@"openLink"]) {
-        [UIApplication openURL:message.body];
+        if ([message.body isKindOfClass:NSString.class])
+            [UIApplication openURL:message.body];
     }
 }
 
@@ -388,7 +398,12 @@ static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight",
             NSLog(@"error getting character size: %@", error);
             return;
         }
+        if (![charSizeRaw isKindOfClass:NSArray.class] || charSizeRaw.count < 2 ||
+            ![charSizeRaw[0] isKindOfClass:NSNumber.class] || ![charSizeRaw[1] isKindOfClass:NSNumber.class])
+            return;
         CGSize charSize = CGSizeMake([charSizeRaw[0] doubleValue], [charSizeRaw[1] doubleValue]);
+        if (!isfinite(charSize.width) || !isfinite(charSize.height) || charSize.width <= 0 || charSize.height <= 0)
+            return;
         double sensitivity = 0.5;
         self.floatingCursorSensitivity = CGSizeMake(charSize.width / sensitivity, charSize.height / sensitivity);
     }];

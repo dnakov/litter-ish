@@ -146,7 +146,11 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
     } else if ([message.name isEqualToString:@"log"]) {
         NSLog(@"%@", message.body);
     } else if ([message.name isEqualToString:@"sendInput"]) {
+        if (![message.body isKindOfClass:NSString.class])
+            return;
         NSData *data = [message.body dataUsingEncoding:NSUTF8StringEncoding];
+        if (data == nil)
+            return;
         [self sendInput:data];
     } else if ([message.name isEqualToString:@"resize"]) {
         [self syncWindowSize];
