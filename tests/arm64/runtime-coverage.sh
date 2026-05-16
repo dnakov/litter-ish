@@ -791,6 +791,105 @@ int main(void) {
 }
 EOF
 
+    cat >"$dir/addsub_ldr8_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint8_t data[8] = {0x11, 0x22, 0xab, 0xcd, 0x55, 0x66, 0x77, 0x88};
+
+int main(void) {
+    uint64_t loaded0 = 0, loaded1 = 0;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "add x10, x9, #1\n"
+        "ldrb w11, [x10, #1]\n"
+        "add x12, x9, #3\n"
+        "ldrb w12, [x12]\n"
+        "mov %[loaded0], x11\n"
+        "mov %[loaded1], x12\n"
+        : [loaded0] "=r"(loaded0), [loaded1] "=r"(loaded1)
+        : [base] "r"(data)
+        : "x9", "x10", "x11", "x12", "memory", "cc");
+    if (loaded0 != data[2] || loaded1 != data[3]) {
+        printf("addsub-ldr8-fail %llx %llx\n",
+               (unsigned long long)loaded0, (unsigned long long)loaded1);
+        return 1;
+    }
+    puts("addsub-ldr8-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_addsub_ldr8_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, #-1\n"
+"    movz x11, #0x5678\n"
+"    movk x11, #0x1234, lsl #16\n"
+"    movk x11, #0x5678, lsl #32\n"
+"    movk x11, #0x1234, lsl #48\n"
+"    add x10, x9, #1\n"
+"1:  ldrb w11, [x10]\n"
+"    ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_x11;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_x11 = (uintptr_t)uc->uc_mcontext.regs[11];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    const uintptr_t marker = 0x1234567812345678ULL;
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 0 || observed_x11 != marker) {
+        fprintf(stderr, "bad fused addsub ldr8 fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx x11=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_x11);
+        return 1;
+    }
+    puts("fused-addsub-ldr8-fault-ok");
+    return 0;
+}
+EOF
+
     cat >"$dir/addsub_str_fusion.c" <<'EOF'
 #include <stdint.h>
 #include <stdio.h>
@@ -1401,6 +1500,8 @@ run_lane() {
     run_test c "arm64 fused addsub ldr fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_ldr_fault.c -o fused_addsub_ldr_fault && ./fused_addsub_ldr_fault | grep -qx fused-addsub-ldr-fault-ok"
     run_test c "arm64 addsub ldr32 fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_ldr32_fusion.c -o addsub_ldr32_fusion && ./addsub_ldr32_fusion | grep -qx addsub-ldr32-fusion-ok"
     run_test c "arm64 fused addsub ldr32 fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_ldr32_fault.c -o fused_addsub_ldr32_fault && ./fused_addsub_ldr32_fault | grep -qx fused-addsub-ldr32-fault-ok"
+    run_test c "arm64 addsub ldr8 fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_ldr8_fusion.c -o addsub_ldr8_fusion && ./addsub_ldr8_fusion | grep -qx addsub-ldr8-fusion-ok"
+    run_test c "arm64 fused addsub ldr8 fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_ldr8_fault.c -o fused_addsub_ldr8_fault && ./fused_addsub_ldr8_fault | grep -qx fused-addsub-ldr8-fault-ok"
     run_test c "arm64 addsub str fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_str_fusion.c -o addsub_str_fusion && ./addsub_str_fusion | grep -qx addsub-str-fusion-ok"
     run_test c "arm64 fused addsub str fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_str_fault.c -o fused_addsub_str_fault && ./fused_addsub_str_fault | grep -qx fused-addsub-str-fault-ok"
     run_test c "arm64 ldr cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 ldr_cbz_fusion.c -o ldr_cbz_fusion && ./ldr_cbz_fusion | grep -qx ldr-cbz-fusion-ok"
