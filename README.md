@@ -4,7 +4,11 @@
 
 `ios-linuxkit` is a Linux runtime for iOS developers. It packages the ARM64 iSH work into a developer-focused environment for running shells, compilers, package managers, language runtimes, and agent/CLI tooling on iPhone and iPad.
 
-The project is based on the `ish-arm64` branch of [iSH](https://ish.app/), but the current focus is no longer just ARM64 bring-up. The emphasis is a practical iOS Linux runtime backed by extensive runtime testing, workload smoke tests, and stabilization of the ARM64 threaded-code executor, Linux syscall layer, filesystem behavior, networking, signals, and modern runtime compatibility.
+The project is based on the `ish-arm64` branch of [iSH](https://ish.app/), but the current focus is no longer just ARM64 bring-up. The emphasis is a practical, _reproducible testing focused_ iOS Linux runtime backed by extensive runtime testing, workload smoke tests, and stabilization of the ARM64 threaded-code executor, Linux syscall layer, filesystem behavior, networking, signals, and modern runtime compatibility.
+
+All the harness tests run in ARM64 Linux, providing direct introspection, debugging, and tracing capabilities that enable easier, reproducible fixes instead of fiddling with a mixed macOS/iOS/Linux environment. 
+
+> **AI Usage:** The harness testing and subsequent fixes are designed to be AI-driven to enable a tight detection/fix loop, and was run under [`rcarmo/piclaw`](https://github.com/rcarmo/piclaw) using GPT-5.5 and a custom `gdb` skill that ships with the repository. The strategy for doing that, including performance optimizations and directions for coalescing gadget calls into faster code sections is entirely human-driven, and informed by years of fiddling with low-level runtimes.
 
 ## What it provides
 
