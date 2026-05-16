@@ -28,6 +28,8 @@ help:
 	@echo "  make test-arm64-runtime-coverage    Run staged C/Go/Bun/Node/Python/Lua/Java/Clojure/PyPy/Swift/Rust/Erlang/Zig coverage"
 	@echo "  make test-arm64-runtime-coverage-debug"
 	@echo "                                      Run coverage against debug binary"
+	@echo "  make test-arm64-internal-continue-fixtures"
+	@echo "                                      Run opt-in ARM64 internal-continue first-call-site fixtures"
 	@echo "  make debian-arm64-fakefs           Build minimal Debian ARM64 fakefs lane"
 	@echo "  make test-arm64-ai-cli-runtime-coverage"
 	@echo "                                      Run second-stage AI CLI npm/Bun/pip install/startup coverage"
@@ -109,6 +111,14 @@ test-arm64-node-bun-perf: build-arm64-linux
 	REPORT_DIR="$(REPORT_DIR)" \
 	TIMEOUT_S="$(TIMEOUT_S)" \
 	./tests/arm64/node-bun-perf-table.sh
+
+.PHONY: test-arm64-internal-continue-fixtures
+test-arm64-internal-continue-fixtures: build-arm64-linux
+	ISH_BIN="$(CURDIR)/$(RELEASE_BUILD_DIR)/ish" \
+	ROOTFS="$(ROOTFS_DIR)" \
+	REPORT_DIR="$(REPORT_DIR)" \
+	TIMEOUT_S="$(TIMEOUT_S)" \
+	./tests/arm64/internal-continue-fixtures.sh
 
 .PHONY: test-arm64-ai-cli-runtime-coverage
 test-arm64-ai-cli-runtime-coverage: build-arm64-linux $(DEBIAN_ROOTFS_DIR)
