@@ -1,0 +1,20 @@
+JetBrains Mono Nerd Font Mono vendored for ios-linuxkit
+
+Source: https://github.com/ryanoasis/nerd-fonts/releases/latest/download/JetBrainsMono.zip
+Release contents used:
+- JetBrainsMonoNerdFontMono-Regular.ttf
+- JetBrainsMonoNerdFontMono-Bold.ttf
+
+Upstream projects:
+- JetBrains Mono: https://github.com/JetBrains/JetBrainsMono
+- Nerd Fonts: https://github.com/ryanoasis/nerd-fonts
+
+License: SIL Open Font License 1.1. See OFL.txt in the Nerd Fonts archive.
+Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+
+Internal iOS font names:
+- JetBrainsMonoNFM-Regular
+- JetBrainsMonoNFM-Bold
+
+CSS family:
+- JetBrainsMono Nerd Font Mono

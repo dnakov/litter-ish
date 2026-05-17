@@ -25,7 +25,7 @@ let styleState = {
     foregroundColor: '#f0f0f0',
     backgroundColor: '#000000',
     cursorColor: undefined,
-    fontFamily: 'ui-monospace, "SFMono-Regular", "FiraCode Nerd Font", "FiraMono Nerd Font", "FiraCode Nerd Font Mono", "Fira Code", "Roboto Mono", Menlo, Monaco, Consolas, "Liberation Mono", "DejaVu Sans Mono", "Courier New", monospace',
+    fontFamily: '"JetBrainsMono Nerd Font Mono", "FiraCode Nerd Font Mono", ui-monospace, "SFMono-Regular", Menlo, Monaco, monospace',
     fontSize: 15,
     colorPaletteOverrides: undefined,
     blinkCursor: false,
@@ -172,6 +172,7 @@ function installBridgeExports() {
         term.options.theme = themeForGhostty(styleState);
 
         fitTerminal();
+        forceFullRepaint();
         scheduleScrollSync();
     };
 
@@ -297,6 +298,14 @@ function fitTerminal() {
         native.resize();
         scheduleScrollSync();
     }
+}
+
+function forceFullRepaint() {
+    if (!term?.renderer || !term?.wasmTerm)
+        return;
+
+    term.renderer.render(term.wasmTerm, true, term.viewportY || 0, term, term.scrollbarOpacity || 0);
+    term.requestRender?.();
 }
 
 function scheduleScrollSync() {

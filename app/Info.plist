@@ -63,6 +63,8 @@
 	<true/>
 	<key>UIAppFonts</key>
 	<array>
+		<string>JetBrainsMonoNerdFontMono-Regular.ttf</string>
+		<string>JetBrainsMonoNerdFontMono-Bold.ttf</string>
 		<string>FiraCodeNerdFontMono-Regular.ttf</string>
 		<string>FiraCodeNerdFontMono-Bold.ttf</string>
 	</array>

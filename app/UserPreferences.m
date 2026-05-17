@@ -35,9 +35,11 @@ NSDictionary<NSString *, NSString *> *friendlyPreferenceReverseMapping;
 NSDictionary<NSString *, NSString *> *kvoProperties;
 
 static NSString *const kSystemMonospacedFontName = @"ui-monospace";
-static NSString *const kBundledTerminalFontFamilyName = @"FiraCode Nerd Font Mono";
+static NSString *const kFiraTerminalFontFamilyName = @"FiraCode Nerd Font Mono";
+static NSString *const kJetBrainsTerminalFontFamilyName = @"JetBrainsMono Nerd Font Mono";
 static NSString *const kLegacyGhosttyWebTerminalFontFamilyName = @"\"FiraCode Nerd Font Mono\", Menlo, Monaco, \"Courier New\", monospace";
-static NSString *const kWebtermTerminalFontFamilyName = @"ui-monospace, \"SFMono-Regular\", \"FiraCode Nerd Font\", \"FiraMono Nerd Font\", \"FiraCode Nerd Font Mono\", \"Fira Code\", \"Roboto Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"DejaVu Sans Mono\", \"Courier New\", monospace";
+static NSString *const kLegacyWebtermTerminalFontFamilyName = @"ui-monospace, \"SFMono-Regular\", \"FiraCode Nerd Font\", \"FiraMono Nerd Font\", \"FiraCode Nerd Font Mono\", \"Fira Code\", \"Roboto Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"DejaVu Sans Mono\", \"Courier New\", monospace";
+static NSString *const kWebtermTerminalFontFamilyName = @"\"JetBrainsMono Nerd Font Mono\", \"FiraCode Nerd Font Mono\", ui-monospace, \"SFMono-Regular\", Menlo, Monaco, monospace";
 
 @interface UserPreferences () {
     BOOL _hostnameIsOverridden;
@@ -326,8 +328,13 @@ bool (*remove_user_default)(const char *name);
 // MARK: fontFamily
 - (NSString *)fontFamily {
     NSString *fontFamily = [_defaults objectForKey:kPreferenceFontFamilyKey];
-    if ([fontFamily isEqualToString:kLegacyGhosttyWebTerminalFontFamilyName]) {
+    if ([fontFamily isEqualToString:kLegacyGhosttyWebTerminalFontFamilyName] ||
+        [fontFamily isEqualToString:kLegacyWebtermTerminalFontFamilyName]) {
         fontFamily = kWebtermTerminalFontFamilyName;
+        [_defaults setObject:fontFamily forKey:kPreferenceFontFamilyKey];
+    } else if ([fontFamily isEqualToString:@"FiraCode Nerd Font"] ||
+               [fontFamily isEqualToString:@"FiraMono Nerd Font"]) {
+        fontFamily = kFiraTerminalFontFamilyName;
         [_defaults setObject:fontFamily forKey:kPreferenceFontFamilyKey];
     }
     return fontFamily;
@@ -349,27 +356,28 @@ bool (*remove_user_default)(const char *name);
     if ([self.fontFamily isEqualToString:kWebtermTerminalFontFamilyName]) {
         return @"Webterm Default";
     }
+    if ([self.fontFamily isEqualToString:kJetBrainsTerminalFontFamilyName]) {
+        return @"JetBrains Mono Nerd Font";
+    }
+    if ([self.fontFamily isEqualToString:kFiraTerminalFontFamilyName]) {
+        return @"FiraCode Nerd Font Mono";
+    }
     if ([self.fontFamily isEqualToString:kSystemMonospacedFontName]) {
         return @"System Monospace";
-    }
-    if ([self.fontFamily isEqualToString:@"FiraCode Nerd Font"]) {
-        return @"FiraCode Nerd Font";
-    }
-    if ([self.fontFamily isEqualToString:@"FiraMono Nerd Font"]) {
-        return @"FiraMono Nerd Font";
-    }
-    if ([self.fontFamily isEqualToString:kBundledTerminalFontFamilyName]) {
-        return @"FiraCode Nerd Font Mono";
     }
     return self.fontFamily;
 }
 
 - (UIFont *)approximateFont {
     if ([self.fontFamily isEqualToString:kWebtermTerminalFontFamilyName] ||
-        [self.fontFamily isEqualToString:@"FiraCode Nerd Font"] ||
-        [self.fontFamily isEqualToString:@"FiraMono Nerd Font"] ||
-        [self.fontFamily isEqualToString:kBundledTerminalFontFamilyName]) {
-        UIFont *font = [UIFont fontWithName:kBundledTerminalFontFamilyName size:self.fontSize.doubleValue];
+        [self.fontFamily isEqualToString:kJetBrainsTerminalFontFamilyName]) {
+        UIFont *font = [UIFont fontWithName:@"JetBrainsMonoNFM-Regular" size:self.fontSize.doubleValue];
+        if (font) {
+            return font;
+        }
+    }
+    if ([self.fontFamily isEqualToString:kFiraTerminalFontFamilyName]) {
+        UIFont *font = [UIFont fontWithName:kFiraTerminalFontFamilyName size:self.fontSize.doubleValue];
         if (font) {
             return font;
         }
