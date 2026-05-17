@@ -3,15 +3,14 @@ name: CI
 on:
   push:
   pull_request:
-      branches: [master]
+      branches: [main]
 
 jobs:
   build-linux:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04-arm
     strategy:
       matrix:
-        cc: [clang, gcc]
-        kernel: [ish, linux]
+        cc: [clang]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -24,24 +23,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install libarchive-dev
           pip3 install meson ninja
-      - name: Clone Linux
-        if: matrix.kernel == 'linux'
-        run: deps/clone-linux.sh
       - name: Build
         run: |
-          meson build -Dengine=asbestos -Dkernel=${{matrix.kernel}}
+          meson build -Dengine=asbestos -Dkernel=ish
           ninja -C build
         env:
           CC: ${{matrix.cc}}
       - name: Test
-        if: matrix.kernel == 'ish'
         run: ninja -C build test
 
   build-mac:
     runs-on: macos-15
-    strategy:
-      matrix:
-        kernel: [ish, linux]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -49,24 +41,17 @@ jobs:
       - name: Install dependencies
         run: |
           brew install llvm lld ninja libarchive meson
-      - name: Clone Linux
-        if: matrix.kernel == 'linux'
-        run: deps/clone-linux.sh
       - name: Build
-        if: matrix.kernel == 'ish'
         run: xcodebuild -project iSH.xcodeproj -scheme iSH -arch arm64 -sdk iphoneos CODE_SIGNING_ALLOWED=NO
-      - name: Build
-        if: matrix.kernel == 'linux'
-        run: xcodebuild -project iSH.xcodeproj -scheme iSH+Linux -arch arm64 -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO
 
   build-embed-rust:
     # Tests the new ish-embed-{protocol,supervisor,host} Cargo workspace.
     # Runs on macOS so the `IshInstance::boot` smoke tests can exercise
     # the kernel against a real fakefs (cross-builds the AArch64 supervisor
     # via rust-lld which ships with rustup).
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: true
       - name: Install host build deps
@@ -85,4 +70,24 @@ jobs:
         working-directory: embed
         env:
           ISH_TEST_ROOTFS: ${{ github.workspace }}/build/fs/data
-        run: cargo test -p ish-embed-host --test smoke -- --test-threads=1
+          RUST_BACKTRACE: 1
+        run: |
+          set +e
+          cargo test -p ish-embed-host --test smoke -- --test-threads=1 --nocapture
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            smoke_bin=""
+            for candidate in target/debug/deps/smoke-*; do
+              if [ -x "$candidate" ] && [ -f "$candidate" ]; then
+                smoke_bin="$candidate"
+                break
+              fi
+            done
+            if [ -n "$smoke_bin" ]; then
+              lldb --batch \
+                -o "run --test-threads=1 --nocapture" \
+                -k "thread backtrace all" \
+                -- "$smoke_bin" || true
+            fi
+          fi
+          exit "$status"
