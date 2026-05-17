@@ -1,6 +1,6 @@
 ghostty-web vendored from https://github.com/rcarmo/ghostty-web
-Commit: f82a69cf82d54aeaba35d2a4165a58e33bbb93c2
-Version: 0.8.2
+Commit: 67ef07c900f31cfcdec078806aea487065186702
+Version: 0.9.0
 
 Vendored files:
 - ghostty-web.js: browser bundle used by app/terminal/term.js
@@ -12,3 +12,5 @@ Local iOS patch:
 - app/terminal/term.js calls init() without a path so ghostty-web uses its
   embedded data: URL WASM. WKWebView rejects fetch() for the standalone local
   file:// ghostty-vt.wasm in this app bundle.
+- app/terminal/term.js requests the experimental WebGL renderer. Upstream
+  falls back to Canvas2D when WebGL2 is unavailable.

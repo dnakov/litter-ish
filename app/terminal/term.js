@@ -26,7 +26,7 @@ let styleState = {
     backgroundColor: '#000000',
     cursorColor: undefined,
     fontFamily: '"JetBrainsMono Nerd Font Mono", "FiraCode Nerd Font Mono", ui-monospace, "SFMono-Regular", Menlo, Monaco, monospace',
-    fontSize: 15,
+    fontSize: 12,
     colorPaletteOverrides: undefined,
     blinkCursor: false,
     cursorShape: 'BLOCK',
@@ -95,6 +95,7 @@ window.addEventListener('load', async () => {
             cursorStyle: cursorStyleForGhostty(styleState.cursorShape),
             fontFamily: styleState.fontFamily,
             fontSize: styleState.fontSize,
+            renderer: 'webgl',
             scrollbarWidth: 0,
             smoothScrollDuration: 0,
             theme: themeForGhostty(styleState),
@@ -165,8 +166,10 @@ function installBridgeExports() {
         styleState = {...styleState, ...nextStyle};
         await loadConfiguredFont(styleState);
 
-        term.options.fontFamily = styleState.fontFamily;
-        term.options.fontSize = styleState.fontSize;
+        if (term.options.fontFamily !== styleState.fontFamily)
+            term.options.fontFamily = styleState.fontFamily;
+        if (term.options.fontSize !== styleState.fontSize)
+            term.options.fontSize = styleState.fontSize;
         term.options.cursorBlink = !!styleState.blinkCursor;
         term.options.cursorStyle = cursorStyleForGhostty(styleState.cursorShape);
         term.options.theme = themeForGhostty(styleState);
