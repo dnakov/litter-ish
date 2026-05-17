@@ -439,6 +439,14 @@ Phase 4 reconnaissance counter tranche:
 - Node/Bun validation: default `/workspace/tmp/ish-arm64-node-bun-perf-20260517-071603.md` and block-stats `/workspace/tmp/ish-arm64-node-bun-perf-20260517-071650.md` were both **10 / 10 passing**. Aggregated block-stats totals from the stats run: `entries=13238844`, `chain_entries=12493903`, `chain_entry_slot0=5885466`, `chain_entry_slot1=6608436`, `chain_entry_unknown_slot=1`, `chain_entry_same_page=12452595`, and `chain_entry_cross_page=41308`. This shows most observed chained executions stay same-page, and slot 1/fallthrough-style chains are slightly hotter in the Node/Bun table.
 - Runtime validation: default full Alpine runtime coverage `/workspace/tmp/ish-arm64-runtime-coverage-20260517-071802.md` was **83 / 83 passing**. Keep `ISH_ARM64_BLOCK_STATS=1` out of exact-output runtime coverage gates for the same reason as fusion stats: diagnostics intentionally write extra lines.
 
+Phase 4 hot-candidate reconnaissance tranche:
+
+- Added bounded opt-in heavy-hitter tables under `ISH_ARM64_BLOCK_STATS=1` to surface candidate hot block PCs and chained edges without building traces. The dump now includes an `ARM64_BLOCK_HOT_STATS` line with top 8 approximate block entries (`hot_blockN_pc/count`) and top 8 approximate chained edges (`hot_edgeN_from/to/slot/count`) plus sample and eviction totals.
+- Scope remains reconnaissance-only: no trace builder, no guarded exits, no invalidation epoch changes, no changes to normal generated gadget streams, and the default C path checks `arm64_block_stats_enabled` before calling the hot-block helper. The chained fast path already gates the C stats hook on the same flag.
+- Focused smoke: default `/workspace/tmp/arm64-hotstats-default-20260517-073746.log` stayed silent; stats-enabled `/workspace/tmp/arm64-hotstats-enabled-20260517-073746.log` emitted both `ARM64_BLOCK_STATS` and `ARM64_BLOCK_HOT_STATS` with non-zero hot block/edge fields.
+- Node/Bun validation: default `/workspace/tmp/ish-arm64-node-bun-perf-20260517-073802.md` and block-stats `/workspace/tmp/ish-arm64-node-bun-perf-20260517-073848.md` were both **10 / 10 passing**. Aggregated hot-candidate stats from the block-stats run: `block_samples=25674755`, `edge_samples=12503165`, `chain_entries=12503165`, `chain_entry_unknown_slot=0`; the hottest row-local block candidate observed was `hot_block0_pc=0xedfba7a8` with count `2216394`, and the hottest row-local edge candidate was `0xedfb379c -> 0xedfb37a8` on slot `1` with count `1752072`.
+- Runtime validation: default full Alpine runtime coverage `/workspace/tmp/ish-arm64-runtime-coverage-20260517-074001.md` was **83 / 83 passing**.
+
 ## Validation gates
 
 For each implementation tranche:
