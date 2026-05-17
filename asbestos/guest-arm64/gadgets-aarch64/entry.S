@@ -97,8 +97,13 @@ fiber_ret_chain:
     b.ne poke                               // if changed, return to main loop for flush
     // Optional block-stats probe for chained block-entry execution. This is
     // measurement-only and runs only when ISH_ARM64_BLOCK_STATS is enabled.
+#if __APPLE__
+    adrp x8, NAME(arm64_block_stats_enabled)@GOTPAGE
+    ldr x8, [x8, NAME(arm64_block_stats_enabled)@GOTPAGEOFF]
+#else
     adrp x8, :got:NAME(arm64_block_stats_enabled)
     ldr x8, [x8, :got_lo12:NAME(arm64_block_stats_enabled)]
+#endif
     ldrb w8, [x8]
     cbz w8, 1f
     save_c
