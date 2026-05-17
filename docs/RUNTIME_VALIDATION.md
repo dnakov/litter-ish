@@ -6,14 +6,14 @@ This file describes the validation gates used before advertising a runtime chang
 
 | Item | Value |
 |---|---|
-| Core report | `/workspace/tmp/ish-arm64-runtime-coverage-20260516-211305.md` |
+| Core report | `/workspace/tmp/ish-arm64-runtime-coverage-20260517-092759.md` |
 | Core result | **83 / 83 passing** |
 | Binary | `build-arm64-linux/ish` |
 | Rootfs | `alpine-arm64-fakefs` |
 | Validation host | Orange Pi 6 Plus, CIX P1 (CD8180/CD8160), 12-core AArch64 |
 | Host OS/kernel | Orange Pi 1.0.2 Trixie / Debian Trixie, Linux `6.6.89-cix` |
 | Host toolchain | Clang 19.1.7, Meson 1.7.0, Ninja 1.12.1, GNU Make 4.4.1 |
-| Timeouts | `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=1200` |
+| Timeouts | Latest Alpine gate used `TIMEOUT_S=120`, `INSTALL_TIMEOUT_S=1200`; broad/local gate command below keeps `TIMEOUT_S=180` for margin. |
 | Required diagnostics | `SAFETY-VALVE=0`, `NETDIAG=0` in clean core logs |
 
 Related docs: [workload smoke tests](ARM64_WORKLOAD_SMOKE_TESTS.md), [syscall coverage ledger](ARM64_SMOKE_ISSUES_AND_SYSCALL_COVERAGE.md), [executor plan](ARM64_GADGET_FUSION_PLAN.md).
@@ -58,7 +58,8 @@ Related docs: [workload smoke tests](ARM64_WORKLOAD_SMOKE_TESTS.md), [syscall co
 |---|---|---|
 | CLI corner cases | TUI tools, DNS/HTTPS, GitHub clone, Docker CLI/daemon diagnostics, `strace`, `lsof`, netlink visibility. | **27 pass / 2 unsupported / 0 fail**. Docker daemon/container rows are unsupported without container kernel primitives. |
 | npm CLI package lane | Unauthenticated install/startup/help/version probes for npm-installed CLIs. | **16 / 16** in Alpine npm lane. Debian/glibc lane remains blocked by thread/libuv assertions. |
-| Node/Bun perf | Timing table for executor changes and optional block/prechain statistics. | Use before/after dispatch optimization work. |
+| Node/Bun perf | Timing table for executor changes and optional block/prechain/hot-trace statistics. | Use before/after dispatch optimization work; default reports must stay free of stats output. Latest default/gated Phase 4 pair: `/workspace/tmp/ish-arm64-node-bun-perf-20260517-092629.md` and `/workspace/tmp/ish-arm64-node-bun-perf-20260517-092700.md`, both **10 / 10**. |
+| ARM64 executor diagnostics | `ISH_ARM64_BLOCK_STATS=1`, `ISH_ARM64_FUSION_STATS=1`, and dry-run `ISH_ARM64_HOT_TRACE=1` counters. | Opt-in only; do not run exact-output runtime coverage with these diagnostics because they intentionally write `ARM64_*_STATS` lines. Current hot-trace diagnostics are measurement-only and default-off: no trace builder, guarded exits, invalidation epoch changes, or generated-code behavior changes. |
 | NativeAOT publish | Full `dotnet publish -p:PublishAot=true`. | Opt-in only via `ISH_ARM64_DOTNET_AOT_PUBLISH=1`; current focused probes stall in Roslyn `csc` after restore. |
 
 ## Failure rules

@@ -1,12 +1,12 @@
 # ios-linuxkit ARM64 smoke issues and syscall coverage appraisal
 
-Updated: 2026-05-16
+Updated: 2026-05-17
 
 ## Executive status
 
 The current ARM64 Linux-host fakefs is in a good core-runtime state:
 
-- Staged runtime coverage: **83 / 83 passing**.
+- Staged runtime coverage: **83 / 83 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260517-092759.md`).
 - Benchmarks Game core tier: **9 official language rows × 10 benchmarks = 90 / 90 runs passing**.
 - Java-equivalent probe: **10 / 10 passing** in HotSpot default mixed mode; interpreter fallback mode also passes.
 - Native compiler rows additionally build inside the guest: **GCC 10 / 10 builds**, **G++ 10 / 10 builds**.
@@ -147,7 +147,7 @@ Noisy ARM64 fault diagnostics (`page fault ...`, register dumps, block instructi
 
 ARM64 iSH now keeps guest barrier classes distinct at translation time: `DMB` emits a host `dmb`, `DSB` emits a host `dsb`, and `ISB` emits a host `isb`. Because the current decoder folds all CRm shareability/domain variants into one gadget per barrier class, the `DMB` and `DSB` gadgets use the strongest host `sy` domain so guest `SY`/`LD`/`ST` forms are not under-serialized.
 
-The staged runtime suite includes `arm64 barriers DMB/DSB/ISB`, which compiles and executes common barrier encodings (`dmb sy`, `dmb ish`, `dmb ishld`, `dmb ishst`, `dsb sy`, `dsb ish`, and `isb`) inside the guest. Latest staged coverage is `/workspace/tmp/ish-arm64-runtime-coverage-20260516-211305.md` with **83 / 83 passing**.
+The staged runtime suite includes `arm64 barriers DMB/DSB/ISB`, which compiles and executes common barrier encodings (`dmb sy`, `dmb ish`, `dmb ishld`, `dmb ishst`, `dsb sy`, `dsb ish`, and `isb`) inside the guest. Latest staged coverage is `/workspace/tmp/ish-arm64-runtime-coverage-20260517-092759.md` with **83 / 83 passing**.
 
 ## 2026-05-12 production audit hardening
 
@@ -164,7 +164,7 @@ Validation after these changes: `make build-arm64-linux-all`, staged runtime cov
 
 ## 2026-05-13 runtime coverage expansion and cleanup fixes
 
-The staged runtime suite has continued expanding since this pass and now validates **83 / 83 passing** in `/workspace/tmp/ish-arm64-runtime-coverage-20260516-211305.md`; this 2026-05-13 tranche added the following language/toolchain smoke or availability coverage:
+The staged runtime suite has continued expanding since this pass and now validates **83 / 83 passing** in `/workspace/tmp/ish-arm64-runtime-coverage-20260517-092759.md`; this 2026-05-13 tranche added the following language/toolchain smoke or availability coverage:
 
 - Python/Lua: version and eval smoke.
 - Java/Clojure: default mixed-mode `javac`/`java`, Java interpreter fallback, and `clojure.main` eval smoke.
@@ -187,3 +187,9 @@ This audit closed two runtime correctness issues found while isolating standalon
 The helper cleanup also keeps ARM64-only reservation handling behind `GUEST_ARM64` in common memory paths; an x86 audit object build confirmed `kernel_memory.c.o` compiles without leaking ARM64 reservation fields into the x86 `struct mem` layout.
 
 The package rows avoid native credential/keychain integrations during unauthenticated help/version checks; npm scripts or native addons are disabled or stubbed when the row only needs to validate CLI startup.
+
+## 2026-05-17 ARM64 executor Phase 4 reconnaissance status
+
+Phase 4 executor work after the internal-continue tranche remains measurement-only/default-off. The latest commits add opt-in block/hot-trace counters behind `ISH_ARM64_BLOCK_STATS=1` and `ISH_ARM64_HOT_TRACE=1`, including dry-run candidate eligibility and a top-8 eligible-edge heavy-hitter table. They do **not** build or execute hot traces, add guarded exits, change invalidation epochs, store interior trace pointers in `jump_ip`, or change generated gadget streams.
+
+The current evidence favors a future first trace prototype constrained to same-page forward edges, preferably adjacent or very-near candidates. Node/Bun gated diagnostics at `/workspace/tmp/ish-arm64-node-bun-perf-20260517-092700.md` passed **10 / 10** and reported `hot_trace_edge_candidate=9148801` out of `hot_trace_edge_samples=12505085` (**73.16%**), with `hot_trace_edge_candidate_adjacent=6560652` and `hot_trace_edge_candidate_le16=6067462`. Default runtime coverage remains **83 / 83** at `/workspace/tmp/ish-arm64-runtime-coverage-20260517-092759.md`; keep stats-enabled diagnostic output out of exact-output runtime coverage gates.

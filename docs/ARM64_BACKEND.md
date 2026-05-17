@@ -306,10 +306,10 @@ to debug, not as cases to skip.
 
 Current Linux-host status from this pass:
 
-- Latest staged run: **83 / 83 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260516-211305.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=1200`).
+- Latest staged Alpine run: **83 / 83 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260517-092759.md`, `TIMEOUT_S=120`, `INSTALL_TIMEOUT_S=1200`).
 - Latest Alpine npm CLI package run: **16 / 16 passing** (`/workspace/tmp/ish-arm64-cli-package-runtime-coverage-20260515-200605.md`, unauthenticated install/startup/version/help probes).
 - Production package baseline: [ARM64_PRODUCTION_BASELINE.md](ARM64_PRODUCTION_BASELINE.md) (`alpine-arm64-fakefs` on Alpine 3.23.4 with OpenJDK 21.0.10_p7-r0; current `master` after tagged validation point `arm64-openjdk21-prod-20260513-r6`; `origin` is configured for `rcarmo/ios-linuxkit`).
-- Non-trivial workload probes are grouped in [ARM64_WORKLOAD_SMOKE_TESTS.md](ARM64_WORKLOAD_SMOKE_TESTS.md): Bun workspace/server, `rcarmo/go-gte`, and the Benchmarks Game rows.
+- Non-trivial workload probes are grouped in [ARM64_WORKLOAD_SMOKE_TESTS.md](ARM64_WORKLOAD_SMOKE_TESTS.md): Bun workspace/server, `rcarmo/go-gte`, the Benchmarks Game rows, and Node/Bun executor timing/diagnostic gates.
 - C coverage is green: `gcc --version`, compile, and execute all pass.
 - SysV IPC coverage is green: shared memory and message queues work across `fork()`.
 - High-value syscall gap and socket ABI coverage is green: `signalfd4`, scheduler priority calls, SysV semaphores, POSIX mqueues, `memfd_create`, `openat2`, `faccessat2`, `fchmodat2(AT_EMPTY_PATH)`, `preadv2`, `pwritev2`, `process_vm_*`, UDP `sendto`/`recvfrom`, TCP `listen`/`accept`, socketpair `sendmsg`/`recvmsg` with `SCM_RIGHTS`, `getsockname`, `setsockopt`, and `getsockopt` pass in the staged C fixture.
@@ -404,10 +404,12 @@ Current Linux-host status from this pass:
 Immediate plan:
 
 1. keep the Makefile target as the single command for coverage regressions;
-2. run longer Bun/npm workloads to find the next post-coverage failure instead
+2. keep Phase 4 executor work measurement-only/default-off until guarded exits,
+   invalidation ownership, and fault-PC behavior are designed and tested;
+3. run longer Bun/npm workloads to find the next post-coverage failure instead
    of expanding the suite blindly;
-3. finish optional crypto/LSE helper validation before re-advertising those HWCAP bits;
-4. revisit JSC parallel/concurrent GC suspension if/when we need to remove the
+4. finish optional crypto/LSE helper validation before re-advertising those HWCAP bits;
+5. revisit JSC parallel/concurrent GC suspension if/when we need to remove the
    `JSC_numberOfGCMarkers=1` / `JSC_useConcurrentGC=0` compatibility shims.
 
 ### Host ABI notes

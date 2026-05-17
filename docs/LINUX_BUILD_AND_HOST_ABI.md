@@ -270,7 +270,7 @@ Directory reads now propagate or infer Linux `DT_*` values:
 
 Validation: a minimal Bun recursive `fs.cpSync` directory tree copy succeeds,
 the workspace bootstrap no longer logs the `ENOTSUP ... copyfile` warning, and staged
-runtime coverage remains **83 / 83 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260516-211305.md`), with the later `fchmodat2(AT_EMPTY_PATH)`, scheduler priority syscall, C# NativeAOT SDK-availability, and high-address `MAP_NORESERVE` reservation-overlap probes included in the staged gate.
+runtime coverage remains **83 / 83 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260517-092759.md`), with the later `fchmodat2(AT_EMPTY_PATH)`, scheduler priority syscall, C# NativeAOT SDK-availability, high-address `MAP_NORESERVE` reservation-overlap probes, and Phase 4 default-off executor reconnaissance validation included in the staged gate.
 
 ## Blocking I/O and exit cleanup
 
@@ -331,6 +331,13 @@ The practical host-facing ABI is now:
 - `gadget_set_jit_saved_pc`
 - host signal recovery in `main.c`
 - TLB/cross-page fault exits in ARM64 memory gadgets
+
+### Executor diagnostics ABI
+
+- Linux/local env gates in `main.c` parse `ISH_ARM64_FUSION_STATS`, `ISH_ARM64_BLOCK_STATS`, and the dormant dry-run `ISH_ARM64_HOT_TRACE` flag.
+- `ISH_ARM64_BLOCK_STATS=1` emits block/chaining/hot-edge diagnostics at process exit.
+- `ISH_ARM64_HOT_TRACE=1` is only meaningful with block stats today; it enables candidate classification/table output for future trace design but does not build traces, add guarded exits, change invalidation epochs, or change generated gadget streams.
+- Diagnostic `ARM64_*_STATS` output is intentionally kept out of exact-output runtime coverage gates.
 
 ### Runtime compatibility shims
 

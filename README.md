@@ -28,6 +28,10 @@ The terminal app in this repository is a reference shell. The reusable parts are
 
 See [runtime validation](docs/RUNTIME_VALIDATION.md) for commands, reports, and failure rules. See [workload smoke tests](docs/ARM64_WORKLOAD_SMOKE_TESTS.md) for heavier workload coverage.
 
+## Executor optimization status
+
+ARM64 executor speed work is documented in [ARM64_GADGET_FUSION_PLAN.md](docs/ARM64_GADGET_FUSION_PLAN.md). Current Phase 4 hot-trace work is deliberately measurement-only and default-off: `ISH_ARM64_BLOCK_STATS=1 ISH_ARM64_HOT_TRACE=1` records candidate-edge counters/table output for future design, but the runtime does not build or execute traces, add guarded exits, change invalidation epochs, allocate executable memory, or change generated gadget streams.
+
 ## Validation host
 
 The current Linux-host reports were produced on this board:

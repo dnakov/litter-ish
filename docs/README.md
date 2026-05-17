@@ -9,7 +9,7 @@ This directory holds project documentation. The top-level README is the product 
 | [RUNTIME_VALIDATION.md](RUNTIME_VALIDATION.md) | Test gates, commands, report paths, coverage areas, and failure rules. |
 | [ARM64_WORKLOAD_SMOKE_TESTS.md](ARM64_WORKLOAD_SMOKE_TESTS.md) | Workload matrix for language runtimes, package managers, CLIs, and Benchmarks Game rows. |
 | [ARM64_BACKEND.md](ARM64_BACKEND.md) | ARM64 guest backend architecture inherited from `ish-arm64`. |
-| [ARM64_GADGET_FUSION_PLAN.md](ARM64_GADGET_FUSION_PLAN.md) | Executor dispatch/chaining experiments and constraints. |
+| [ARM64_GADGET_FUSION_PLAN.md](ARM64_GADGET_FUSION_PLAN.md) | Executor dispatch/chaining experiments, Phase 4 hot-trace reconnaissance, and constraints. |
 | [LINUX_BUILD_AND_HOST_ABI.md](LINUX_BUILD_AND_HOST_ABI.md) | Linux-host build and platform abstraction notes. |
 
 ## Reports and ledgers
