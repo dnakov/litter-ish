@@ -67,5 +67,6 @@ void linux_sethostname(const char *hostname);
 ssize_t linux_read_file(const char *path, char *buf, size_t size);
 ssize_t linux_write_file(const char *path, const char *buf, size_t size);
 int linux_remove_directory(const char *path);
+int linux_create_directory(const char *path, int mode);
 
 #endif /* LinuxInterop_h */

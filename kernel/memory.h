@@ -122,6 +122,7 @@ page_t pt_find_hole(struct mem *mem, pages_t size);
 page_t pt_find_hole_high(struct mem *mem, pages_t size);
 int pt_map_lazy(struct mem *mem, page_t start, pages_t pages, unsigned flags);
 struct mem_reservation *mem_find_reservation(struct mem *mem, page_t page);
+bool mem_range_has_reservation(struct mem *mem, page_t start, pages_t pages);
 void mem_remove_reservations(struct mem *mem, page_t start, pages_t pages);
 int mem_set_reservation_flags(struct mem *mem, page_t start, pages_t pages, unsigned flags);
 

@@ -1,4 +1,4 @@
-# go-gte progress on ARM64 iSH
+# go-gte progress on ios-linuxkit ARM64
 
 See also: [ARM64 workload smoke tests](ARM64_WORKLOAD_SMOKE_TESTS.md), the central index for workload rationale and latest results.
 
@@ -8,7 +8,7 @@ Reviewed: 2026-05-13; `go test -count=1 ./...` and `make run-go` were revalidate
 
 ## Goal
 
-Install and run `https://github.com/rcarmo/go-gte` inside the ARM64 iSH Linux-host fakefs, then record how far the modern Go + Python + SIMD workload gets.
+Install and run `https://github.com/rcarmo/go-gte` inside the ios-linuxkit ARM64 Linux-host fakefs, then record how far the modern Go + Python + SIMD workload gets.
 
 ## Environment
 
@@ -64,7 +64,7 @@ Guest-side model conversion now succeeds after adding AdvSIMD `FCVTL`/`FCVTL2` s
 
 ## Working result
 
-After updating go-gte from `b76c36a` to `d908cdb`, the full Go package tests now pass inside ARM64 iSH:
+After updating go-gte from `b76c36a` to `d908cdb`, the full Go package tests now pass inside ios-linuxkit ARM64:
 
 ```text
 ok   github.com/rcarmo/gte-go/gte       0.205s
@@ -86,7 +86,7 @@ File size: 127.51 MB
 CONVERT_RC:0
 ```
 
-`make run-go` now completes inside ARM64 iSH:
+`make run-go` now completes inside ios-linuxkit ARM64:
 
 ```sh
 make run-go

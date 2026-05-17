@@ -1,12 +1,14 @@
 build/
 build-*/
 embed/target/
+.DS_Store
 xcuserdata/
 .floo
 
 cross-*.txt
 root.tar.gz
 alpine-*-fakefs/
+debian-*-fakefs/
 
 node_modules
 app/xtermjs/xterm-dist

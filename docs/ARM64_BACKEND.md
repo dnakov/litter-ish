@@ -1,8 +1,8 @@
-# iSH ARM64 — Linux on iOS via Native Threaded-Code Interpreter
+# ios-linuxkit ARM64 backend — Linux on iOS via native threaded-code interpreter
 
-**Fork of [ish-app/ish](https://github.com/ish-app/ish)** — a userspace Linux emulator for iOS.
+`ios-linuxkit` builds on the `ish-arm64` fork of [ish-app/ish](https://github.com/ish-app/ish), a userspace Linux emulator for iOS.
 
-This fork adds a **native ARM64 guest backend** to upstream iSH's threaded-code interpreter
+The `ish-arm64` work added a **native ARM64 guest backend** to upstream iSH's threaded-code interpreter
 (*Asbestos*, formerly called *jit* — renamed upstream in 2024 because it doesn't actually emit
 machine code). The new backend emulates AArch64 Linux on Apple Silicon, running alongside
 the original x86 (i386) guest backend. The result is a dramatically faster and more
@@ -11,9 +11,9 @@ CLI tools** directly on iPhone and iPad.
 
 > ## 🚢 Production Use
 >
-> This engine is shipping in **[OpenMinis](https://openminis.app)** as the **Agent Shell Sandbox**,
+> This engine is shipping in **[OpenMinis](https://openminis.app)** as the **shell sandbox**,
 > where it has been **stably used by over 10,000 users** to run Linux tools and shell workloads
-> on iOS. The numbers and stability claims in this README are grounded in that real-world
+> on iOS. The numbers and stability claims in this document are grounded in that real-world
 > deployment, not just synthetic benchmarks.
 
 > **Naming note**: *Asbestos* is the upstream project's name for its threaded-code
@@ -50,7 +50,7 @@ fundamental limits:
 
 ```
 +--------------------------------------------------------------+
-|  iOS App (iSH ARM64)                                         |
+|  iOS App (ios-linuxkit)                                         |
 |                                                              |
 |  +--------------------------------------------------------+  |
 |  |  Asbestos (threaded-code interpreter)                  |  |
@@ -63,11 +63,11 @@ fundamental limits:
 |  +--------------------------------------------------------+  |
 |                                                              |
 |  +-------------------+    +-------------------------------+  |
-|  |  Linux Kernel     |    |  Agent Integration            |  |
-|  |  (syscalls,       |    |  - Embed host API             |  |
-|  |   signals,        |    |  - Native Offload             |  |
-|  |   futex, epoll)   |    |  - Bind Mounts                |  |
-|  +-------------------+    |  - RootfsPatch overlay        |  |
+|  |  Linux Kernel     |    |  Host Integration            |  |
+|  |  (syscalls,       |    |  - ISHShellExecutor           |  |
+|  |   signals,        |    |  - DebugServer (JSON-RPC)     |  |
+|  |   futex, epoll)   |    |  - Native Offload             |  |
+|  +-------------------+    |  - Bind Mounts                |  |
 |                           +-------------------------------+  |
 |  +-------------------+                                       |
 |  |  Filesystem       |                                       |
@@ -133,7 +133,38 @@ Running Node.js on a userspace emulator required solving multiple V8-specific pr
 
 **Result**: `npm install`, `npm exec`, `npx`, and `create-next-app` all work.
 
-### 4. Runtime Integration
+### 4. Host integration
+
+Mechanisms for embedding the Linux guest in an iOS host app:
+
+#### ISHShellExecutor (`app/ISHShellExecutor.h`)
+
+Objective-C API for programmatic shell execution with streaming output:
+
+```objc
+[ISHShellExecutor executeCommand:@"pip install requests"
+                    lineCallback:^(NSString *line, BOOL isStdErr) {
+                        NSLog(@"%@", line);
+                    }
+                      completion:^(ISHShellExecutionResult *result) {
+                          NSLog(@"Exit code: %d", result.exitCode);
+                      }];
+```
+
+#### DebugServer (`app/DebugServer.c`)
+
+JSON-RPC over HTTP server for guest introspection:
+
+```bash
+# List files
+curl localhost:1234 -d '{"jsonrpc":"2.0","id":1,"method":"fs.readdir","params":{"path":"/usr/bin"}}'
+
+# Execute command
+curl localhost:1234 -d '{"jsonrpc":"2.0","id":1,"method":"guest.exec","params":{"command":"python3 --version"}}'
+
+# Inspect processes
+curl localhost:1234 -d '{"jsonrpc":"2.0","id":1,"method":"task.list"}'
+```
 
 #### Native Offload (`kernel/native_offload.c`)
 
@@ -159,7 +190,7 @@ Mount host directories into the guest filesystem:
 fakefs_bind_mount("/host/path/to/data", "/mnt/data", /*read_only=*/true);
 ```
 
-Enables AI agents to share files between the host app and the Linux guest without copying.
+Lets host-app code share files with the Linux guest without copying.
 
 ### 5. Rootfs Management
 
@@ -174,7 +205,8 @@ Enables AI agents to share files between the host app and the Linux guest withou
 
 | Target | Scheme | xcconfig | Guest Arch | Bundle ID Suffix |
 |--------|--------|----------|------------|------------------|
-| ARM64 | iSH | `App.xcconfig` / `AppARM64.xcconfig` | aarch64 | — |
+| x86 (original) | iSH | `App.xcconfig` | i386 | — |
+| ARM64 | iSH-ARM64 | `AppARM64.xcconfig` | aarch64 | `.arm64` |
 | ARM64 + FFmpeg | iSH-ARM64-ffmpeg | `AppARM64-ffmpeg.xcconfig` | aarch64 | `.arm64` |
 
 The ARM64 target links meson-built libraries (`libish.a`, `libish_emu.a`, `libfakefs.a`) directly
@@ -182,7 +214,7 @@ from `build-arm64-release/`, bypassing Xcode's auto-discovery of x86 library tar
 
 ```bash
 # Build ARM64 CLI (macOS, for testing)
-meson setup build-arm64-release --buildtype=release
+meson setup build-arm64-release -Dguest_arch=arm64 --buildtype=release
 ninja -C build-arm64-release
 
 # Run
@@ -197,11 +229,11 @@ emulator projects.
 
 ```bash
 # Build the Linux host binary
-CC=clang meson setup build-arm64-linux --buildtype=release
+CC=clang meson setup build-arm64-linux -Dguest_arch=arm64 --buildtype=release
 ninja -C build-arm64-linux
 
 # Build the Linux SDL/VNC harness (requires SDL2, SDL2_ttf, libvterm, libvncserver)
-CC=clang meson setup build-linux-harness
+CC=clang meson setup build-linux-harness -Dguest_arch=arm64
 ninja -C build-linux-harness tools/ish-sdl-vnc
 
 # Run it against an existing ish binary + fakefs
@@ -250,7 +282,7 @@ The coverage script currently exercises, in order:
 1. base shell/apk/tmp file I/O sanity checks;
 2. a C toolchain smoke test (`gcc --version`, compile, execute);
 3. SysV shared-memory/message-queue IPC across `fork()`;
-4. high-value syscall gap and socket ABI coverage (`signalfd4`, SysV semaphores, POSIX mqueues, `memfd_create`, `openat2`, `faccessat2`, `preadv2`, `pwritev2`, `process_vm_*`, UDP `sendto`/`recvfrom`, `getsockname`, `setsockopt`, `getsockopt`);
+4. high-value syscall gap and socket ABI coverage (`signalfd4`, SysV semaphores, POSIX mqueues, `memfd_create`, `openat2`, `faccessat2`, `preadv2`, `pwritev2`, `process_vm_*`, UDP `sendto`/`recvfrom`, TCP `listen`/`accept`, socketpair `sendmsg`/`recvmsg` including `SCM_RIGHTS` fd passing, `getsockname`, `setsockopt`, `getsockopt`);
 5. ARM64 `DCZID_EL0` / `dc zva` sysreg and instruction coverage;
 6. ARM64 signal `ucontext_t` layout and null-SIGSEGV delivery coverage;
 7. ARM64 `CCMP`/`CCMN` condition-code-15 (`NV`) coverage;
@@ -274,12 +306,13 @@ to debug, not as cases to skip.
 
 Current Linux-host status from this pass:
 
-- Latest staged run: **49 / 49 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260513-203532.md`, `TIMEOUT_S=180`, `INSTALL_TIMEOUT_S=300`).
-- Production package baseline: [docs/ARM64_PRODUCTION_BASELINE.md](docs/ARM64_PRODUCTION_BASELINE.md) (`alpine-arm64-fakefs` on Alpine 3.23.4 with OpenJDK 21.0.10_p7-r0; current audit tag `arm64-openjdk21-prod-20260510-r5`).
-- Non-trivial workload probes are grouped in [docs/ARM64_WORKLOAD_SMOKE_TESTS.md](docs/ARM64_WORKLOAD_SMOKE_TESTS.md): Bun/PiClaw, `rcarmo/go-gte`, and the Benchmarks Game rows.
+- Latest staged Alpine run: **83 / 83 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260517-092759.md`, `TIMEOUT_S=120`, `INSTALL_TIMEOUT_S=1200`).
+- Latest Alpine npm CLI package run: **16 / 16 passing** (`/workspace/tmp/ish-arm64-cli-package-runtime-coverage-20260515-200605.md`, unauthenticated install/startup/version/help probes).
+- Production package baseline: [ARM64_PRODUCTION_BASELINE.md](ARM64_PRODUCTION_BASELINE.md) (`alpine-arm64-fakefs` on Alpine 3.23.4 with OpenJDK 21.0.10_p7-r0; current `master` after tagged validation point `arm64-openjdk21-prod-20260513-r6`; `origin` is configured for `rcarmo/ios-linuxkit`).
+- Non-trivial workload probes are grouped in [ARM64_WORKLOAD_SMOKE_TESTS.md](ARM64_WORKLOAD_SMOKE_TESTS.md): Bun workspace/server, `rcarmo/go-gte`, the Benchmarks Game rows, and Node/Bun executor timing/diagnostic gates.
 - C coverage is green: `gcc --version`, compile, and execute all pass.
 - SysV IPC coverage is green: shared memory and message queues work across `fork()`.
-- High-value syscall gap and socket ABI coverage is green: `signalfd4`, SysV semaphores, POSIX mqueues, `memfd_create`, `openat2`, `faccessat2`, `preadv2`, `pwritev2`, `process_vm_*`, UDP `sendto`/`recvfrom`, `getsockname`, `setsockopt`, and `getsockopt` pass in the staged C fixture.
+- High-value syscall gap and socket ABI coverage is green: `signalfd4`, scheduler priority calls, SysV semaphores, POSIX mqueues, `memfd_create`, `openat2`, `faccessat2`, `fchmodat2(AT_EMPTY_PATH)`, `preadv2`, `pwritev2`, `process_vm_*`, UDP `sendto`/`recvfrom`, TCP `listen`/`accept`, socketpair `sendmsg`/`recvmsg` with `SCM_RIGHTS`, `getsockname`, `setsockopt`, and `getsockopt` pass in the staged C fixture.
 - ARM64 DC ZVA coverage is green: `DCZID_EL0` reports a 64-byte block and `dc zva` zeros the expected naturally aligned block.
 - ARM64 signal ucontext coverage is green: guest SIGSEGV handlers see `uc_mcontext` at offset 176 with correct PC/SP/LR, and null read faults reach handlers instead of being converted to zero loads.
 - ARM64 conditional-compare coverage is green: `CCMP`/`CCMN` with condition code 15 (`NV`) now follows AArch64 hardware and performs the compare instead of taking the false-immediate path.
@@ -292,7 +325,7 @@ Current Linux-host status from this pass:
   install allocator/free-list crash has been regression-tested with 50
   consecutive `RC:0` runs, and `bun -e "console.log(1)"` passed 20 consecutive
   repro runs after the GC shims. `setTimeout`, a minimal `Bun.serve` server,
-  and a PiClaw YOLO direct install/web startup smoke also passed.
+  and a Bun workspace web-startup smoke also passed.
 - Node/npm coverage is green: `node --version`, `node -e`, `npm --version`, and
   `npm run` pass without the previous noisy `pwritev` stubs.
 - Python and Lua smoke coverage is green: `python3 --version`, Python eval,
@@ -301,6 +334,10 @@ Current Linux-host status from this pass:
   Java interpreter fallback, and `clojure.main` eval all pass.
 - PyPy and Swift availability probes are green by recording that Alpine 3.23
   aarch64 currently has no packaged PyPy or Swift toolchain in the index.
+- C# NativeAOT SDK availability is accounted for: `dotnet9-sdk-aot` and
+  `dotnet10-sdk-aot` are installed and the default gate reports
+  `dotnet-aot-sdk-installed-publish-opt-in`; full publish/run remains opt-in
+  because focused probes currently stall in Roslyn `csc` after restore.
 - Rust coverage is green for direct `rustc` and Cargo paths: version, compile/run, optimized std runtime, `rustc --test`, Cargo build/run/test, threads, atomics, channels, file I/O, TCP loopback, and child processes pass without safety-valve or NETDIAG noise.
 - Erlang coverage is green for BEAM startup/version (`erl -version`). Fuller
   `erl -noshell`/`erlc` module execution remains follow-up work.
@@ -316,6 +353,8 @@ Current Linux-host status from this pass:
   high mappings; silently relocating these reservations into low memory corrupts
   allocator metadata.
 - Large anonymous `MAP_NORESERVE` arenas are now placed in the high 48-bit address space first, instead of burning the low 4GB mmap window. This removes Bun/JSC startup `ENOMEM` on repeated 1-8GB arena probes.
+- High-address lazy reservations are now visible to high-hole allocation, caller-hint rejection, and alignment checks. This prevents later medium Bun/JSC mappings from overlapping an existing `MAP_NORESERVE` reservation and is covered by the staged runtime gate plus the 16/16 Alpine npm CLI package lane.
+- ARM64 `fchmodat2` syscall 452 is wired and covered, including `AT_EMPTY_PATH` on both an open fd and `AT_FDCWD`/current directory.
 - Fixed the pair-exclusive `STXP/STLXP` gadget clobbering `_pc` (`x28`) while
   loading the expected high word. The standalone `tests/arm64/atomics/ldxp-stlxp.c` now covers both 64-bit and 32-bit pair exclusives and passes.
 - Fixed `CAS`/`CASP` decode separation so pair exclusives are no longer misdecoded as single-register CAS. The standalone `tests/arm64/atomics/cas128.c` now passes.
@@ -359,16 +398,18 @@ Current Linux-host status from this pass:
   wired to `rt_sigreturn`.
 - Fixed `getdents64` `d_type` reporting for realfs/fakefs/tmpfs/proc/devpts. Bun
   `fs.cpSync(..., {recursive:true})` uses directory-entry types while walking
-  trees; returning `DT_UNKNOWN` caused PiClaw's bootstrap copy of `.pi/skills`
+  trees; returning `DT_UNKNOWN` caused a Bun workspace bootstrap copy
   to try `copyfile` on subdirectories and fail with `ENOTSUP`.
 
 Immediate plan:
 
 1. keep the Makefile target as the single command for coverage regressions;
-2. run longer Bun/npm workloads to find the next post-coverage failure instead
+2. keep Phase 4 executor work measurement-only/default-off until guarded exits,
+   invalidation ownership, and fault-PC behavior are designed and tested;
+3. run longer Bun/npm workloads to find the next post-coverage failure instead
    of expanding the suite blindly;
-3. finish optional crypto/LSE helper validation before re-advertising those HWCAP bits;
-4. revisit JSC parallel/concurrent GC suspension if/when we need to remove the
+4. finish optional crypto/LSE helper validation before re-advertising those HWCAP bits;
+5. revisit JSC parallel/concurrent GC suspension if/when we need to remove the
    `JSC_numberOfGCMarkers=1` / `JSC_useConcurrentGC=0` compatibility shims.
 
 ### Host ABI notes
@@ -389,18 +430,50 @@ See also:
 
 ---
 
-## Workload Validation
+## Performance
 
-This tree is ARM64-only. The active workload checks live under `tests/arm64/`
-and the current validation notes are in:
+Measured with `benchmark/run.sh` on macOS 26.4.1 / Apple Silicon using guest-side
+timing (startup overhead excluded). Full details in
+**[benchmark/BENCHMARK_PERF.md](benchmark/BENCHMARK_PERF.md)**.
 
-- `docs/ARM64_WORKLOAD_SMOKE_TESTS.md`
-- `docs/ARM64_SMOKE_ISSUES_AND_SYSCALL_COVERAGE.md`
-- `tests/arm64/runtime-coverage.sh`
+### Overhead vs Native (by workload)
 
-The embedded Litter acceptance path is `embed/host/tests/acceptance.rs`, which
-boots an aarch64 Alpine fakefs and verifies `/bin/sh`, Python, Node/npm, Go, and
-a basic Cargo/Rust workload.
+| Category | x86/Native | ARM64/Native | **ARM64 vs x86** |
+|---|:---:|:---:|:---:|
+| C (pure compute) | 14-208x | 1-66x | **1.1-12.0x** |
+| Shell pipelines | 57-305x | 3-42x | **5.3-7.2x** |
+| Python | 12-201x | 3.8-169x | **3.8-10.2x** |
+| Go (startup) | 10-26x | 2.5-3.1x | **2.5-3.1x** |
+| Node.js | — | 1.6-20.8x | N/A (x86 broken) |
+
+### Headline numbers (compute-heavy)
+
+- **C `int_arith_2M`**: ARM64 **12.0x faster** than x86 (65ms vs 782ms)
+- **Python `sum(1M)`**: ARM64 **10.2x faster** (610ms vs 6200ms)
+- **Python `fib(30)`**: ARM64 **9.2x faster** (1661ms vs 15219ms)
+- **Shell `seq+awk 100K`**: ARM64 **7.2x faster** (882ms vs 6338ms)
+- **C `matrix_64x64`** / **`mem_seq_4MB`**: near-native speed on ARM64 (~1.1-1.5x)
+
+> **Why ARM64 wins**: same-architecture gadget dispatch (each guest instruction costs only a
+> few ARM64 host instructions inside its gadget), full NEON + crypto extensions, 48-bit
+> address space for V8/Go/Rust, and Node.js-specific fixes (V8 binary patch, guard pages,
+> `--jitless` injection, io_uring syscall) that the upstream x86 branch lacks. Node.js 22
+> cannot run on x86 iSH (missing syscall 425 / `io_uring_setup`).
+
+## Compatibility
+
+205 tests across 18 categories (Core OS, FileOps, Text, Build, Python, Node.js, Go/Rust/Perl/…,
+Network, VCS, Editors, Shell, DB, Media, Crypto, SysMon, Debug, PkgMgr, Signal). Both
+architectures tested under fakefs with the same installed package set. Full report:
+**[benchmark/BENCHMARK_COMPAT.md](benchmark/BENCHMARK_COMPAT.md)**.
+
+| Architecture | Pass | Fail | Rate |
+|---|:---:|:---:|:---:|
+| **x86** (Jitter, threaded-code) | 201 | 4 | **98%** |
+| **ARM64** (Asbestos, threaded-code) | 205 | 0 | **100%** |
+
+**x86's 4 failures** are all genuine limitations (not benchmark bugs):
+`automake`, `perl` (/dev/null write quirk), `go env`, `go compile` (32-bit VA).
 
 ---
 
@@ -439,7 +512,7 @@ Major milestones:
 4. **Node.js support**: V8 guard pages, MAP_NORESERVE, binary patch, exit cleanup
 5. **Go support**: Signal frame alignment, per-thread `sigaltstack`, sigreturn fixes, NZCV preservation
 6. **Rust/uv support**: FUTEX_WAIT_BITSET, PMULL, BFM, demand-mapped reads
-7. **Runtime integration**: embed host API, native offload, bind mounts, rootfs overlay
+7. **Host integration**: ISHShellExecutor, DebugServer, Native Offload, Bind Mounts
 8. **Stability**: 50+ bug fixes for concurrency, memory leaks, use-after-free, deadlocks
 
 ---
@@ -483,16 +556,20 @@ iSH/
 ├── app/
 │   ├── AppARM64.xcconfig        # ARM64 build config
 │   ├── GuestARM64.xcconfig      # Guest arch definition
+│   ├── ISHShellExecutor.h/m     # Shell execution API
+│   ├── DebugServer.c/h          # JSON-RPC debug server
 │   └── RootfsPatch.bundle/      # Versioned rootfs overlay
-└── tests/arm64/
-    ├── runtime-coverage.sh       # Full ARM64 runtime coverage script
-    ├── atomics/                  # Focused atomic instruction fixtures
-    ├── loadstore/                # Load/store fixtures
-    └── benchmarksgame/           # ARM64 workload smoke scripts
+├── benchmark/
+│   ├── run.sh                    # Unified benchmark entry point
+│   └── assets/                   # shellbench.sh + cbench_lite + prebuilt binaries
+└── docs/
+    └── benchmark/
+        ├── BENCHMARK_PERF.md     # Archived performance report
+        └── BENCHMARK_COMPAT.md   # Archived compatibility report
 ```
 
 ---
 
 ## License
 
-Same as upstream iSH. See [LICENSE](LICENSE.md).
+Same as upstream iSH. See [LICENSE](../LICENSE.md).

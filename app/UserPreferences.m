@@ -35,6 +35,11 @@ NSDictionary<NSString *, NSString *> *friendlyPreferenceReverseMapping;
 NSDictionary<NSString *, NSString *> *kvoProperties;
 
 static NSString *const kSystemMonospacedFontName = @"ui-monospace";
+static NSString *const kFiraTerminalFontFamilyName = @"FiraCode Nerd Font Mono";
+static NSString *const kJetBrainsTerminalFontFamilyName = @"JetBrainsMono Nerd Font Mono";
+static NSString *const kLegacyGhosttyWebTerminalFontFamilyName = @"\"FiraCode Nerd Font Mono\", Menlo, Monaco, \"Courier New\", monospace";
+static NSString *const kLegacyWebtermTerminalFontFamilyName = @"ui-monospace, \"SFMono-Regular\", \"FiraCode Nerd Font\", \"FiraMono Nerd Font\", \"FiraCode Nerd Font Mono\", \"Fira Code\", \"Roboto Mono\", Menlo, Monaco, Consolas, \"Liberation Mono\", \"DejaVu Sans Mono\", \"Courier New\", monospace";
+static NSString *const kWebtermTerminalFontFamilyName = @"\"JetBrainsMono Nerd Font Mono\", \"FiraCode Nerd Font Mono\", ui-monospace, \"SFMono-Regular\", Menlo, Monaco, monospace";
 
 @interface UserPreferences () {
     BOOL _hostnameIsOverridden;
@@ -166,19 +171,12 @@ bool (*remove_user_default)(const char *name);
             kPreferenceCursorStyleKey: @(CursorStyleBlock),
             kPreferenceHideStatusBarKey: @(NO),
             kPreferenceColorSchemeKey: @(ColorSchemeMatchSystem),
-            kPreferenceThemeKey: @"Default",
+            kPreferenceThemeKey: @"xterm",
             kHostnameOverrideKey: UIDevice.currentDevice.name,
         }];
-        // https://webkit.org/blog/10247/new-webkit-features-in-safari-13-1/
-        if (@available(iOS 13.4, *)) {
-            [_defaults registerDefaults:@{
-                kPreferenceFontFamilyKey: kSystemMonospacedFontName,
-            }];
-        } else {
-            [_defaults registerDefaults:@{
-                kPreferenceFontFamilyKey: @"Menlo",
-            }];
-        }
+        [_defaults registerDefaults:@{
+            kPreferenceFontFamilyKey: kWebtermTerminalFontFamilyName,
+        }];
         get_all_defaults_keys = get_all_defaults_keys_impl;
         get_friendly_name = get_friendly_name_impl;
         get_underlying_name = get_underlying_name_impl;
@@ -329,7 +327,17 @@ bool (*remove_user_default)(const char *name);
 
 // MARK: fontFamily
 - (NSString *)fontFamily {
-    return [_defaults objectForKey:kPreferenceFontFamilyKey];
+    NSString *fontFamily = [_defaults objectForKey:kPreferenceFontFamilyKey];
+    if ([fontFamily isEqualToString:kLegacyGhosttyWebTerminalFontFamilyName] ||
+        [fontFamily isEqualToString:kLegacyWebtermTerminalFontFamilyName]) {
+        fontFamily = kWebtermTerminalFontFamilyName;
+        [_defaults setObject:fontFamily forKey:kPreferenceFontFamilyKey];
+    } else if ([fontFamily isEqualToString:@"FiraCode Nerd Font"] ||
+               [fontFamily isEqualToString:@"FiraMono Nerd Font"]) {
+        fontFamily = kFiraTerminalFontFamilyName;
+        [_defaults setObject:fontFamily forKey:kPreferenceFontFamilyKey];
+    }
+    return fontFamily;
 }
 
 - (void)setFontFamily:(NSString *)fontFamily {
@@ -345,16 +353,46 @@ bool (*remove_user_default)(const char *name);
 }
 
 - (NSString *)fontFamilyUserFacingName {
-    return [self.fontFamily isEqualToString:kSystemMonospacedFontName] ? @"System" : self.fontFamily;
+    if ([self.fontFamily isEqualToString:kWebtermTerminalFontFamilyName]) {
+        return @"Webterm Default";
+    }
+    if ([self.fontFamily isEqualToString:kJetBrainsTerminalFontFamilyName]) {
+        return @"JetBrains Mono Nerd Font";
+    }
+    if ([self.fontFamily isEqualToString:kFiraTerminalFontFamilyName]) {
+        return @"FiraCode Nerd Font Mono";
+    }
+    if ([self.fontFamily isEqualToString:kSystemMonospacedFontName]) {
+        return @"System Monospace";
+    }
+    return self.fontFamily;
 }
 
 - (UIFont *)approximateFont {
+    if ([self.fontFamily isEqualToString:kWebtermTerminalFontFamilyName] ||
+        [self.fontFamily isEqualToString:kJetBrainsTerminalFontFamilyName]) {
+        UIFont *font = [UIFont fontWithName:@"JetBrainsMonoNFM-Regular" size:self.fontSize.doubleValue];
+        if (font) {
+            return font;
+        }
+    }
+    if ([self.fontFamily isEqualToString:kFiraTerminalFontFamilyName]) {
+        UIFont *font = [UIFont fontWithName:kFiraTerminalFontFamilyName size:self.fontSize.doubleValue];
+        if (font) {
+            return font;
+        }
+    }
     if (@available(iOS 13.4, *)) {
         if ([self.fontFamily isEqualToString:kSystemMonospacedFontName]) {
             return [UIFont monospacedSystemFontOfSize:self.fontSize.doubleValue weight:UIFontWeightRegular];
         }
     }
     UIFont *font = [UIFont fontWithName:self.fontFamily size:self.fontSize.doubleValue];
+    if (font) {
+        return font;
+    }
+    UIFontDescriptor *descriptor = [UIFontDescriptor fontDescriptorWithFontAttributes:@{UIFontDescriptorFamilyAttribute: self.fontFamily}];
+    font = [UIFont fontWithDescriptor:descriptor size:self.fontSize.doubleValue];
     return font ? font : [UIFont fontWithName:@"Menlo" size:self.fontSize.doubleValue];
 }
 
@@ -374,7 +412,7 @@ bool (*remove_user_default)(const char *name);
     if ((theme = [Theme themeForName:userTheme includingDefaultThemes:YES])) {
         self.theme = theme;
     } else {
-        self.theme = Theme.defaultThemes.lastObject;
+        self.theme = Theme.defaultThemes.firstObject;
     }
 }
 

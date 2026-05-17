@@ -1,5 +1,8 @@
 ISH_KERNEL = linux
+GUEST_ARCH = arm64
+ROOTFS_URL = dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.0-aarch64.tar.gz
+ROOTFS_ARCH = aarch64
 NINJA_TARGETS = deps/liblinux.a libfakefs.a libish_emu.a
 LINUX_HOSTCC = env -u SDKROOT -u IPHONEOS_DEPLOYMENT_TARGET xcrun clang
-GCC_PREPROCESSOR_DEFINITIONS = $(inherited) ISH_LINUX=1
+GCC_PREPROCESSOR_DEFINITIONS = $(inherited) ISH_LINUX=1 GUEST_ARM64=1
 LINUX_APP_LDFLAGS = -Wl,-ld_classic -sectalign __DATA __percpu_first 1000 -sectalign __DATA __tracepoints 20 -force_load $(BUILT_PRODUCTS_DIR)/liblinux.a -force_load $(BUILT_PRODUCTS_DIR)/libiSHLinux.a

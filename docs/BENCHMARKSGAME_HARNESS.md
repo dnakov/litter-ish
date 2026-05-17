@@ -1,10 +1,10 @@
-# Benchmarks Game ARM64 iSH test case
+# Benchmarks Game ios-linuxkit ARM64 harness
 
 Status: active workload gate for the currently feasible Alpine aarch64 rows.
 
-Primary design document: [`../../../docs/ARM64_WORKLOAD_SMOKE_TESTS.md`](../../../docs/ARM64_WORKLOAD_SMOKE_TESTS.md).
+Primary design document: [ARM64_WORKLOAD_SMOKE_TESTS.md](ARM64_WORKLOAD_SMOKE_TESTS.md).
 
-This directory contains the repeatable harnesses that turn the Benchmarks Game corpus into ARM64 iSH smoke tests. The active shape is:
+This directory contains the repeatable harnesses that turn the Benchmarks Game corpus into ios-linuxkit ARM64 smoke tests. The active shape is:
 
 1. discover active benchmark/language/source variants from the official performance pages;
 2. install or verify the selected Alpine aarch64 toolchains;
@@ -102,7 +102,7 @@ Run the PHP benchmark row with:
 tests/arm64/benchmarksgame/run-php-smoke.sh
 ```
 
-Latest validated result: 10/10 passing. This row includes official `pcntl`/`shmop`/SysV-message variants after adding ARM64 iSH SysV shared memory and message queue support.
+Latest validated result: 10/10 passing. This row includes official `pcntl`/`shmop`/SysV-message variants after adding ios-linuxkit ARM64 SysV shared memory and message queue support.
 
 ## Lua execution row
 

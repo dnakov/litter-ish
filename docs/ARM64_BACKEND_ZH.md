@@ -1,4 +1,4 @@
-# iSH ARM64 — 通过原生 threaded-code 解释器在 iOS 上运行 Linux
+# ios-linuxkit ARM64 后端 — 通过原生 threaded-code 解释器在 iOS 上运行 Linux
 
 **Fork 自 [ish-app/ish](https://github.com/ish-app/ish)** — iOS 上的用户态 Linux 模拟器。
 
@@ -9,7 +9,7 @@
 
 > ## 🚢 生产环境使用
 >
-> 本引擎已在 **[OpenMinis](https://openminis.app)** 中作为 **Agent Shell Sandbox** 投入使用，
+> 本引擎已在 **[OpenMinis](https://openminis.app)** 中作为 **Host Shell Sandbox** 投入使用，
 > 经过 **10,000+ 用户**在 iOS 上稳定运行 Linux 工具和 shell 负载的真实检验。README 中的性能
 > 数据和稳定性声明均来自这个真实线上部署，而不仅仅是合成基准测试。
 
@@ -23,7 +23,7 @@
 > ARM64 host 指令——同架构分派，每条 guest 指令只需几条 host 指令。上游 x86 后端依然并存。
 > 下文部分地方用 "JIT" 作为简写，请理解为"同架构 gadget 分派"，而非运行时代码生成。
 >
-> 英文版: [README_arm64.md](README_arm64.md)
+> 英文版: [ARM64_BACKEND.md](ARM64_BACKEND.md)
 
 ---
 
@@ -58,11 +58,11 @@
 |  +--------------------------------------------------------+  |
 |                                                              |
 |  +-------------------+    +-------------------------------+  |
-|  |  Linux 内核       |    |  Agent 集成                   |  |
-|  |  (syscalls,       |    |  - Embed host API             |  |
-|  |   signals,        |    |  - Native Offload             |  |
-|  |   futex, epoll)   |    |  - Bind Mounts                |  |
-|  +-------------------+    |  - RootfsPatch overlay        |  |
+|  |  Linux 内核       |    |  Host 集成                   |  |
+|  |  (syscalls,       |    |  - ISHShellExecutor           |  |
+|  |   signals,        |    |  - DebugServer (JSON-RPC)     |  |
+|  |   futex, epoll)   |    |  - Native Offload             |  |
+|  +-------------------+    |  - Bind Mounts                |  |
 |                           +-------------------------------+  |
 |  +-------------------+                                       |
 |  |  文件系统         |                                       |
@@ -125,7 +125,38 @@
 
 **效果**: `npm install`、`npm exec`、`npx`、`create-next-app` 全部可用。
 
-### 4. Runtime 集成
+### 4. Host 集成
+
+为 iOS 上的 host app 编排设计的机制:
+
+#### ISHShellExecutor（`app/ISHShellExecutor.h`）
+
+支持流式输出的 Objective-C shell 执行 API:
+
+```objc
+[ISHShellExecutor executeCommand:@"pip install requests"
+                    lineCallback:^(NSString *line, BOOL isStdErr) {
+                        NSLog(@"%@", line);
+                    }
+                      completion:^(ISHShellExecutionResult *result) {
+                          NSLog(@"Exit code: %d", result.exitCode);
+                      }];
+```
+
+#### DebugServer（`app/DebugServer.c`）
+
+HTTP 上的 JSON-RPC 服务器，用于 guest 内省:
+
+```bash
+# 列出文件
+curl localhost:1234 -d '{"jsonrpc":"2.0","id":1,"method":"fs.readdir","params":{"path":"/usr/bin"}}'
+
+# 执行命令
+curl localhost:1234 -d '{"jsonrpc":"2.0","id":1,"method":"guest.exec","params":{"command":"python3 --version"}}'
+
+# 查看进程
+curl localhost:1234 -d '{"jsonrpc":"2.0","id":1,"method":"task.list"}'
+```
 
 #### Native Offload（`kernel/native_offload.c`）
 
@@ -151,7 +182,7 @@ native_offload_add_handler("ffmpeg", ffmpeg_main);
 fakefs_bind_mount("/host/path/to/data", "/mnt/data", /*read_only=*/true);
 ```
 
-让 AI agent 能在 host app 与 Linux guest 之间共享文件而无需复制。
+让 host app 能在 host app 与 Linux guest 之间共享文件而无需复制。
 
 ### 5. Rootfs 管理
 
@@ -175,7 +206,7 @@ ARM64 target 直接链接 `build-arm64-release/` 中 meson 构建的库
 
 ```bash
 # 构建 ARM64 CLI（macOS，测试用）
-meson setup build-arm64-release --buildtype=release
+meson setup build-arm64-release -Dguest_arch=arm64 --buildtype=release
 ninja -C build-arm64-release
 
 # 运行
@@ -184,16 +215,49 @@ ninja -C build-arm64-release
 
 ---
 
-## 工作负载验证
+## 性能
 
-这个树现在只支持 ARM64。活动测试位于 `tests/arm64/`，当前验证记录位于：
+使用 `benchmark/run.sh` 在 macOS 26.4.1 / Apple Silicon 上测试，采用 guest 内置计时
+（排除启动开销）。完整数据见
+**[benchmark/BENCHMARK_PERF.md](benchmark/BENCHMARK_PERF.md)**。
 
-- `docs/ARM64_WORKLOAD_SMOKE_TESTS.md`
-- `docs/ARM64_SMOKE_ISSUES_AND_SYSCALL_COVERAGE.md`
-- `tests/arm64/runtime-coverage.sh`
+### 相对原生的开销（按负载类型）
 
-嵌入式 Litter 验收测试是 `embed/host/tests/acceptance.rs`，它会启动 aarch64 Alpine
-fakefs，并验证 `/bin/sh`、Python、Node/npm、Go，以及一个基本的 Cargo/Rust 工作负载。
+| 类别 | x86/Native | ARM64/Native | **ARM64 vs x86** |
+|---|:---:|:---:|:---:|
+| C 纯计算 | 14-208x | 1-66x | **1.1-12.0x** |
+| Shell 管道 | 57-305x | 3-42x | **5.3-7.2x** |
+| Python | 12-201x | 3.8-169x | **3.8-10.2x** |
+| Go 启动 | 10-26x | 2.5-3.1x | **2.5-3.1x** |
+| Node.js | — | 1.6-20.8x | N/A（x86 不可用） |
+
+### 亮点数据（计算密集型）
+
+- **C `int_arith_2M`**: ARM64 比 x86 **快 12.0x**（65ms vs 782ms）
+- **Python `sum(1M)`**: ARM64 **快 10.2x**（610ms vs 6200ms）
+- **Python `fib(30)`**: ARM64 **快 9.2x**（1661ms vs 15219ms）
+- **Shell `seq+awk 100K`**: ARM64 **快 7.2x**（882ms vs 6338ms）
+- **C `matrix_64x64`** / **`mem_seq_4MB`**: ARM64 接近原生速度（仅 ~1.1-1.5x）
+
+> **ARM64 为什么快**: 同架构 gadget 分派（每条 guest 指令只需对应 gadget 中的几条 host 指令）、完整 NEON + 加密扩展、
+> 48-bit 地址空间支持 V8/Go/Rust，以及 Node.js 专项修复（V8 二进制补丁、守护页、`--jitless`
+> 注入、io_uring syscall）—— 这些上游 x86 分支都没有。Node.js 22 在 x86 iSH 上无法运行
+> （缺少 syscall 425 即 `io_uring_setup`）。
+
+## 兼容性
+
+205 项测试覆盖 18 个分类（基础 OS、文件操作、文本处理、构建、Python、Node.js、
+Go/Rust/Perl/…、网络、VCS、编辑器、Shell、数据库、多媒体、加密、系统监控、调试、
+包管理、信号）。两个架构在相同 fakefs 环境下安装相同软件包后测试。完整报告见
+**[benchmark/BENCHMARK_COMPAT.md](benchmark/BENCHMARK_COMPAT.md)**。
+
+| 架构 | 通过 | 失败 | 通过率 |
+|---|:---:|:---:|:---:|
+| **x86** (Jitter, threaded-code) | 201 | 4 | **98%** |
+| **ARM64** (Asbestos, threaded-code) | 205 | 0 | **100%** |
+
+**x86 的 4 项失败**均为模拟器真实限制（而非 benchmark bug）：
+`automake`、`perl`（/dev/null 写入 quirk）、`go env`、`go compile`（32-bit 虚拟地址空间限制）。
 
 ---
 
@@ -232,7 +296,7 @@ fakefs，并验证 `/bin/sh`、Python、Node/npm、Go，以及一个基本的 Ca
 4. **Node.js 支持**: V8 守护页、MAP_NORESERVE、二进制补丁、退出清理
 5. **Go 支持**: 信号帧对齐、sigreturn 修复、NZCV 保留
 6. **Rust/uv 支持**: FUTEX_WAIT_BITSET、PMULL、BFM、按需映射读取
-7. **Runtime 集成**: embed host API、Native Offload、Bind Mounts、RootfsPatch overlay
+7. **Host 集成**: ISHShellExecutor、DebugServer、Native Offload、Bind Mounts
 8. **稳定性**: 50+ 个 bug 修复（并发、内存泄漏、use-after-free、死锁）
 
 ---
@@ -276,16 +340,18 @@ iSH/
 ├── app/
 │   ├── AppARM64.xcconfig        # ARM64 构建配置
 │   ├── GuestARM64.xcconfig      # Guest 架构定义
+│   ├── ISHShellExecutor.h/m     # Shell 执行 API
+│   ├── DebugServer.c/h          # JSON-RPC 调试服务
 │   └── RootfsPatch.bundle/      # 版本化 rootfs overlay
-└── tests/arm64/
-    ├── runtime-coverage.sh      # 完整 ARM64 runtime 覆盖脚本
-    ├── atomics/                 # 原子指令 fixture
-    ├── loadstore/               # load/store fixture
-    └── benchmarksgame/          # ARM64 工作负载 smoke 脚本
+└── benchmark/
+    ├── run.sh                   # 统一入口
+    ├── assets/                  # 测试脚本和预编译二进制
+    ├── BENCHMARK_PERF.md        # 性能报告
+    └── BENCHMARK_COMPAT.md      # 兼容性报告
 ```
 
 ---
 
 ## 许可
 
-与上游 iSH 相同。见 [LICENSE](LICENSE.md)。
+与上游 iSH 相同。见 [LICENSE](../LICENSE.md)。

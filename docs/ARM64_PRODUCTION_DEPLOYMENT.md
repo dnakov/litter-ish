@@ -1,6 +1,7 @@
-# ARM64 Production Deployment Notes
+# ios-linuxkit ARM64 production deployment notes
 
 Date: 2026-05-12
+Reviewed: 2026-05-17
 
 ## Scope
 
@@ -24,7 +25,7 @@ This host can validate and stage the ARM64 Linux iSH production binary/rootfs ba
 - Alpine release: `3.23.4`
 - OpenJDK package baseline: `openjdk21-jdk-21.0.10_p7-r0`
 
-Note: later audit tags through `arm64-openjdk21-prod-20260510-r5` were validated on the same rootfs with staged runtime coverage and default mixed-mode Java Hello. The local deployment artifact above intentionally records the binary/rootfs staged at deployment time; regenerate the artifact directory if an external release wants the exact r5 binary payload.
+Note: later audit tags through `arm64-openjdk21-prod-20260513-r6` and subsequent `master` audit commits were validated on the same rootfs with staged runtime coverage, default mixed-mode Java Hello, expanded Rust/Cargo coverage, socket ABI/`SCM_RIGHTS` coverage, `fchmodat2(AT_EMPTY_PATH)` and scheduler priority syscall coverage, high-address `MAP_NORESERVE` reservation-overlap regression coverage, C# NativeAOT SDK availability, Docker CLI/daemon unsupported diagnostics, opt-in ARM64 internal-continue/taken-internal validation, Alpine npm CLI package startup coverage, and Phase 4 ARM64 executor reconnaissance diagnostics. The latest Phase 4 hot-trace candidate work is default-off and measurement-only: it adds counters/table output behind `ISH_ARM64_BLOCK_STATS=1 ISH_ARM64_HOT_TRACE=1` but does not build or execute traces, add guarded exits, or change invalidation behavior. The local deployment artifact above intentionally records the binary/rootfs staged at deployment time; regenerate the artifact directory if an external release wants the exact current master payload. The working repository `origin` is configured for `rcarmo/ios-linuxkit`; verified bundle/patch exports remain a fallback handoff path.
 
 ## Post-deploy Java smoke
 

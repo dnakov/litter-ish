@@ -46,6 +46,10 @@ struct ios_pty {
 static void ios_pty_output_work(struct work_struct *output_work) {
     struct ios_pty *pty = container_of(output_work, struct ios_pty, output_work);
     char *buf = kvmalloc(PAGE_SIZE, GFP_KERNEL);
+    if (buf == NULL) {
+        printk(KERN_WARNING "ios: failed to allocate pty output buffer\n");
+        return;
+    }
     ssize_t size;
     for (;;) {
         size_t room = Terminal_roomForOutput(pty->terminal);
@@ -53,15 +57,20 @@ static void ios_pty_output_work(struct work_struct *output_work) {
             printk(KERN_WARNING "ios: no room for pty output\n");
             break;
         }
-        size = kernel_read(pty->ptm, buf, room, NULL);
+        size_t read_size = room;
+        if (read_size > PAGE_SIZE)
+            read_size = PAGE_SIZE;
+        size = kernel_read(pty->ptm, buf, read_size, NULL);
         if (size < 0) {
             if (size != -EAGAIN)
                 printk(KERN_WARNING "ios: pty read failed: %s\n", errname(size));
             break;
         }
+        if (size == 0)
+            break;
         int sent = Terminal_sendOutput_length(pty->terminal, buf, size);
         if (sent != size) {
-            printk(KERN_WARNING "ios: dropped %ld bytes of pty output\n", size - sent);
+            printk(KERN_WARNING "ios: dropped %zd bytes of pty output\n", size - sent);
             break;
         }
     }
@@ -85,11 +94,22 @@ static void ios_pty_cb_can_output(struct linux_tty *linux_tty) {
 
 static void ios_pty_cb_send_input(struct linux_tty *linux_tty, const char *data, size_t length) {
     struct ios_pty *pty = container_of(linux_tty, struct ios_pty, linux_tty);
-    ssize_t written = kernel_write(pty->ptm, data, length, NULL);
-    if (written < 0)
-        printk(KERN_WARNING "ios: pty input failed: %s\n", errname(written));
-    else if (written != length)
-        printk(KERN_WARNING "ios: dropped %ld bytes of pty input\n", length - written);
+    size_t offset = 0;
+    while (offset < length) {
+        ssize_t written = kernel_write(pty->ptm, data + offset, length - offset, NULL);
+        if (written < 0) {
+            if (written != -EAGAIN)
+                printk(KERN_WARNING "ios: pty input failed: %s\n", errname(written));
+            else
+                printk(KERN_WARNING "ios: dropped %zu bytes of pty input\n", length - offset);
+            break;
+        }
+        if (written == 0) {
+            printk(KERN_WARNING "ios: dropped %zu bytes of pty input\n", length - offset);
+            break;
+        }
+        offset += written;
+    }
 }
 
 static void ios_pty_cb_resize(struct linux_tty *linux_tty, int cols, int rows) {
@@ -98,7 +118,9 @@ static void ios_pty_cb_resize(struct linux_tty *linux_tty, int cols, int rows) {
         .ws_row = rows,
         .ws_col = cols,
     };
-    vfs_ioctl(pty->ptm, TIOCSWINSZ, (unsigned long) &ws);
+    int err = vfs_ioctl(pty->ptm, TIOCSWINSZ, (unsigned long) &ws);
+    if (err < 0)
+        printk(KERN_WARNING "ios: pty resize failed: %s\n", errname(err));
 }
 
 static void ios_pty_cb_hangup(struct linux_tty *linux_tty) {
@@ -144,7 +166,11 @@ struct file *ios_pty_open(nsobj_t *terminal_out) {
         return ptm_file;
 
     int lock_pty = 0;
-    vfs_ioctl(ptm_file, TIOCSPTLCK, (unsigned long) &lock_pty);
+    int err = vfs_ioctl(ptm_file, TIOCSPTLCK, (unsigned long) &lock_pty);
+    if (err < 0) {
+        fput(ptm_file);
+        return ERR_PTR(err);
+    }
     spin_lock(&ptm_file->f_lock);
     ptm_file->f_flags |= O_NONBLOCK;
     spin_unlock(&ptm_file->f_lock);

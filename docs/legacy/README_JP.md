@@ -1,3 +1,6 @@
+> **Provenance:** Preserved Japanese upstream iSH README from [ish-app/ish](https://github.com/ish-app/ish), as carried by the pre-rebrand `ish-arm64` fork. Archived under `docs/legacy/` during the `ios-linuxkit` rebrand on 2026-05-16.
+>
+
 # [iSH](https://ish.app)
 
 [![Build Status](https://github.com/ish-app/ish/actions/workflows/ci.yml/badge.svg)](https://github.com/ish-app/ish/actions)

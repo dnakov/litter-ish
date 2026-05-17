@@ -6,6 +6,8 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 ISH_BIN="${ISH_BIN:-$PROJECT_DIR/build-arm64-linux/ish}"
 ROOTFS="${ROOTFS:-$PROJECT_DIR/alpine-arm64-fakefs}"
+ROOTFS_LANES="${ROOTFS_LANES:-default=$ROOTFS}"
+LANE_NAME="${LANE_NAME:-default}"
 TIMEOUT_S="${TIMEOUT_S:-120}"
 INSTALL_TIMEOUT_S="${INSTALL_TIMEOUT_S:-1200}"
 REPORT_DIR="${REPORT_DIR:-/workspace/tmp}"
@@ -49,7 +51,7 @@ append_row() {
     local name="$2"
     local status="$3"
     local detail="$4"
-    REPORT_ROWS+="| $stage | $name | $status | ${detail//$'\n'/<br>} |"$'\n'
+    REPORT_ROWS+="| $LANE_NAME | $stage | $name | $status | ${detail//$'\n'/<br>} |"$'\n'
 }
 
 run_test() {
@@ -59,7 +61,7 @@ run_test() {
     local out="$HOST_TMP/test.out"
 
     TOTAL_COUNT=$((TOTAL_COUNT + 1))
-    printf '[%s] %s ... ' "$stage" "$name"
+    printf '[%s/%s] %s ... ' "$LANE_NAME" "$stage" "$name"
     if guest_capture "$cmd" >"$out" 2>&1 && grep -q '^__ISH_STATUS:0$' "$out" && ! grep -q 'SAFETY-VALVE' "$out"; then
         PASS_COUNT=$((PASS_COUNT + 1))
         echo "PASS"
@@ -72,30 +74,63 @@ run_test() {
 }
 
 ensure_guest_basics() {
-    log "Ensuring fakefs DNS/apk basics"
+    log "[$LANE_NAME] Ensuring fakefs DNS/package-manager basics"
     local out="$HOST_TMP/install.out"
-    guest_capture_install "test -f /etc/resolv.conf || echo 'nameserver 1.1.1.1' > /etc/resolv.conf; sed -i 's|https://|http://|g' /etc/apk/repositories 2>/dev/null || true; mkdir -p '$GUEST_WORK'" >"$out" 2>&1
+    guest_capture_install "test -f /etc/resolv.conf || echo 'nameserver 1.1.1.1' > /etc/resolv.conf; if [ -f /etc/apk/repositories ]; then sed -i 's|https://|http://|g' /etc/apk/repositories 2>/dev/null || true; fi; mkdir -p '$GUEST_WORK'" >"$out" 2>&1
+    grep -q '^__ISH_STATUS:0$' "$out"
+}
+
+detect_platform() {
+    local out="$HOST_TMP/platform.out"
+    guest_capture "if command -v apk >/dev/null 2>&1; then echo alpine; elif command -v apt-get >/dev/null 2>&1; then echo debian; else echo unknown; fi" >"$out" 2>&1 || true
+    grep -Ev '^__ISH_STATUS:' "$out" | tail -1
+}
+
+package_for_platform() {
+    local pkg_spec="$1"
+    local platform="$2"
+    local alpine_pkg debian_pkg
+    alpine_pkg="${pkg_spec%%|*}"
+    if [ "$alpine_pkg" = "$pkg_spec" ]; then
+        debian_pkg="$pkg_spec"
+    else
+        debian_pkg="${pkg_spec#*|}"
+    fi
+    if [ "$platform" = debian ]; then
+        printf '%s\n' "$debian_pkg"
+    else
+        printf '%s\n' "$alpine_pkg"
+    fi
+}
+
+install_guest_packages() {
+    if (($# == 0)); then
+        return
+    fi
+    local out="$HOST_TMP/pkg-install.out"
+    log "[$LANE_NAME] Installing guest packages: $*"
+    guest_capture_install "if command -v apk >/dev/null 2>&1; then apk update >/dev/null 2>&1 && apk add --no-cache $*; elif command -v apt-get >/dev/null 2>&1; then export DEBIAN_FRONTEND=noninteractive; apt-get update >/dev/null 2>&1 || true; apt-get install -y $*; else echo 'no supported guest package manager' >&2; exit 127; fi" >"$out" 2>&1
     grep -q '^__ISH_STATUS:0$' "$out"
 }
 
 ensure_tools() {
+    local platform
+    platform="$(detect_platform)"
     local missing=()
-    local spec pkg cmd
+    local spec pkg_spec pkg cmd
     for spec in "$@"; do
-        pkg="${spec%%:*}"
+        pkg_spec="${spec%%:*}"
         cmd="${spec#*:}"
-        [ "$cmd" = "$spec" ] && cmd="$pkg"
+        [ "$cmd" = "$spec" ] && cmd="$(package_for_platform "$pkg_spec" "$platform")"
         local out="$HOST_TMP/ensure-tool.out"
         guest_capture "command -v $cmd >/dev/null 2>&1" >"$out" 2>&1 || true
         if ! grep -q '^__ISH_STATUS:0$' "$out"; then
+            pkg="$(package_for_platform "$pkg_spec" "$platform")"
             missing+=("$pkg")
         fi
     done
     if ((${#missing[@]} > 0)); then
-        log "Installing guest packages: ${missing[*]}"
-        local out="$HOST_TMP/apk.out"
-        guest_capture_install "apk update >/dev/null 2>&1 && apk add --no-cache ${missing[*]}" >"$out" 2>&1
-        grep -q '^__ISH_STATUS:0$' "$out"
+        install_guest_packages "${missing[@]}"
     fi
 }
 
@@ -177,11 +212,14 @@ EOF
 #include <fcntl.h>
 #include <mqueue.h>
 #include <netinet/in.h>
+#include <sched.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/sem.h>
 #include <sys/signalfd.h>
@@ -190,17 +228,26 @@ EOF
 #include <sys/wait.h>
 #include <unistd.h>
 #include <linux/openat2.h>
+#ifndef SYS_fchmodat2
+#define SYS_fchmodat2 452
+#endif
+#ifndef AT_EMPTY_PATH
+#define AT_EMPTY_PATH 0x1000
+#endif
 
 union semun { int val; struct semid_ds *buf; unsigned short *array; };
 static void die(const char *s){perror(s); exit(1);}
 int main(){
  int fd=syscall(SYS_memfd_create,"gap",MFD_CLOEXEC); if(fd<0) die("memfd_create"); write(fd,"abc",3); char b[8]={0}; struct iovec iov={b,3}; if(syscall(SYS_preadv2,fd,&iov,1,0,0)!=3) die("preadv2"); if(strcmp(b,"abc")) return 2; struct iovec wiov={(char*)"Z",1}; if(syscall(SYS_pwritev2,fd,&wiov,1,1,0)!=1) die("pwritev2"); memset(b,0,8); pread(fd,b,3,0); if(strcmp(b,"aZc")) return 3;
- struct open_how how={.flags=O_RDONLY}; int ofd=syscall(SYS_openat2,AT_FDCWD,"/tmp/gap-openat2",&how,sizeof(how)); if(ofd>=0) close(ofd); int cfd=open("/tmp/gap-openat2",O_CREAT|O_RDWR,0600); if(cfd<0) die("create"); close(cfd); ofd=syscall(SYS_openat2,AT_FDCWD,"/tmp/gap-openat2",&how,sizeof(how)); if(ofd<0) die("openat2"); close(ofd); if(syscall(SYS_faccessat2,AT_FDCWD,"/tmp/gap-openat2",R_OK,0)<0) die("faccessat2");
+ struct open_how how={.flags=O_RDONLY}; int ofd=syscall(SYS_openat2,AT_FDCWD,"/tmp/gap-openat2",&how,sizeof(how)); if(ofd>=0) close(ofd); int cfd=open("/tmp/gap-openat2",O_CREAT|O_RDWR,0600); if(cfd<0) die("create"); close(cfd); ofd=syscall(SYS_openat2,AT_FDCWD,"/tmp/gap-openat2",&how,sizeof(how)); if(ofd<0) die("openat2"); close(ofd); if(syscall(SYS_faccessat2,AT_FDCWD,"/tmp/gap-openat2",R_OK,0)<0) die("faccessat2"); cfd=open("/tmp/gap-openat2",O_RDWR); if(cfd<0) die("open fchmodat2"); if(syscall(SYS_fchmodat2,cfd,"",0644,AT_EMPTY_PATH)<0) die("fchmodat2 empty"); struct stat fst; if(stat("/tmp/gap-openat2",&fst)<0||(fst.st_mode&0777)!=0644) die("fchmodat2 mode"); close(cfd); mkdir("/tmp/gap-fchmodat2-dir",0755); if(chdir("/tmp/gap-fchmodat2-dir")<0) die("chdir fchmodat2"); if(syscall(SYS_fchmodat2,AT_FDCWD,"",0750,AT_EMPTY_PATH)<0) die("fchmodat2 cwd"); if(stat(".",&fst)<0||(fst.st_mode&0777)!=0750) die("fchmodat2 cwd mode"); chmod(".",0755); if(chdir("/")<0) die("chdir root");
  sigset_t mask; sigemptyset(&mask); sigaddset(&mask,SIGUSR1); if(sigprocmask(SIG_BLOCK,&mask,NULL)<0) die("sigprocmask"); int sfd=signalfd(-1,&mask,SFD_CLOEXEC|SFD_NONBLOCK); if(sfd<0) die("signalfd"); kill(getpid(),SIGUSR1); struct signalfd_siginfo si; ssize_t sr; for(int i=0;i<100;i++){ sr=read(sfd,&si,sizeof(si)); if(sr==sizeof(si)) break; usleep(1000);} if(sr!=sizeof(si)||si.ssi_signo!=SIGUSR1) die("read signalfd"); close(sfd);
+ struct sched_param sch={.sched_priority=0}; if(syscall(SYS_sched_setscheduler,0,SCHED_OTHER,&sch)!=0) die("sched_setscheduler"); sch.sched_priority=0; if(syscall(SYS_sched_setparam,0,&sch)!=0) die("sched_setparam"); sch.sched_priority=-1; if(syscall(SYS_sched_getparam,0,&sch)!=0||sch.sched_priority!=0) die("sched_getparam"); if(syscall(SYS_sched_getscheduler,0)!=SCHED_OTHER) die("sched_getscheduler");
  int sem=semget(IPC_PRIVATE,1,IPC_CREAT|0600); if(sem<0) die("semget"); union semun u; u.val=1; if(semctl(sem,0,SETVAL,u)<0) die("semctl set"); struct sembuf ops[1]={{0,-1,0}}; if(semop(sem,ops,1)<0) die("semop -1"); if(semctl(sem,0,GETVAL,u)!=0) die("semctl get"); semctl(sem,0,IPC_RMID,u);
  struct mq_attr attr={.mq_maxmsg=4,.mq_msgsize=32}; mqd_t mq=mq_open("/gapmq",O_CREAT|O_RDWR|O_NONBLOCK,0600,&attr); if(mq==(mqd_t)-1) die("mq_open"); if(mq_send(mq,"hello",6,7)<0) die("mq_send"); unsigned pr=0; char mbuf[32]; ssize_t mr=mq_receive(mq,mbuf,sizeof(mbuf),&pr); if(mr!=6||strcmp(mbuf,"hello")||pr!=7) die("mq_receive"); mq_close(mq); mq_unlink("/gapmq");
  int us=socket(AF_INET,SOCK_DGRAM|SOCK_CLOEXEC,0); if(us<0) die("socket udp"); int one=1; if(setsockopt(us,SOL_SOCKET,SO_REUSEADDR,&one,sizeof(one))<0) die("setsockopt reuseaddr"); int stype=0; socklen_t stype_len=sizeof(stype); if(getsockopt(us,SOL_SOCKET,SO_TYPE,&stype,&stype_len)<0||stype!=SOCK_DGRAM||stype_len!=sizeof(stype)) die("getsockopt type"); struct sockaddr_in a={.sin_family=AF_INET,.sin_addr.s_addr=htonl(INADDR_LOOPBACK),.sin_port=0}; if(bind(us,(struct sockaddr*)&a,sizeof(a))<0) die("bind udp"); socklen_t alen=sizeof(a); if(getsockname(us,(struct sockaddr*)&a,&alen)<0) die("getsockname udp"); if(sendto(us,"pong",4,0,(struct sockaddr*)&a,alen)!=4) die("sendto udp"); char rb[16]="XXXXXXXXXXXXXXX"; struct sockaddr_in src; socklen_t slen=sizeof(src); ssize_t rr=recvfrom(us,rb,sizeof(rb),0,(struct sockaddr*)&src,&slen); if(rr!=4||memcmp(rb,"pong",4)||rb[4]!='X'||slen>sizeof(src)) die("recvfrom udp"); close(us);
- char local[16]="self"; char out[16]={0}; struct iovec li={out,5}, ri={local,5}; ssize_t vr=syscall(SYS_process_vm_readv,getpid(),&li,1,&ri,1,0); if(vr!=5||strcmp(out,"self")) die("process_vm_readv"); char in[16]="that"; struct iovec liw={in,5}, riw={local,5}; ssize_t vw=syscall(SYS_process_vm_writev,getpid(),&liw,1,&riw,1,0); if(vw!=5||strcmp(local,"that")) die("process_vm_writev");
+ int ls=socket(AF_INET,SOCK_STREAM|SOCK_CLOEXEC,0); if(ls<0) die("socket tcp"); if(setsockopt(ls,SOL_SOCKET,SO_REUSEADDR,&one,sizeof(one))<0) die("setsockopt tcp"); memset(&a,0,sizeof(a)); a.sin_family=AF_INET; a.sin_addr.s_addr=htonl(INADDR_LOOPBACK); if(bind(ls,(struct sockaddr*)&a,sizeof(a))<0) die("bind tcp"); alen=sizeof(a); if(getsockname(ls,(struct sockaddr*)&a,&alen)<0||alen>sizeof(a)) die("getsockname tcp"); if(listen(ls,1)<0) die("listen tcp"); pid_t cp=fork(); if(cp<0) die("fork tcp"); if(cp==0){ int cs=socket(AF_INET,SOCK_STREAM|SOCK_CLOEXEC,0); if(cs<0) _exit(21); if(connect(cs,(struct sockaddr*)&a,alen)<0) _exit(22); if(write(cs,"hi",2)!=2) _exit(23); close(cs); _exit(0); } struct sockaddr_in peer; socklen_t plen=sizeof(peer); int as=accept(ls,(struct sockaddr*)&peer,&plen); if(as<0||plen>sizeof(peer)) die("accept tcp"); char tb[4]={0}; if(read(as,tb,2)!=2||memcmp(tb,"hi",2)) die("read tcp"); close(as); close(ls); int wst=0; if(waitpid(cp,&wst,0)<0||!WIFEXITED(wst)||WEXITSTATUS(wst)!=0) die("wait tcp");
+ int sp[2]; if(socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,sp)<0) die("socketpair"); struct iovec siov[2]={{(char*)"ab",2},{(char*)"cd",2}}; struct msghdr sm={.msg_iov=siov,.msg_iovlen=2}; if(sendmsg(sp[0],&sm,0)!=4) die("sendmsg"); char r1[3]={0},r2[3]={0}; struct iovec riov2[2]={{r1,2},{r2,2}}; struct msghdr rm={.msg_iov=riov2,.msg_iovlen=2}; if(recvmsg(sp[1],&rm,0)!=4||memcmp(r1,"ab",2)||memcmp(r2,"cd",2)) die("recvmsg"); int pfd[2]; if(pipe(pfd)<0) die("pipe"); char ctrl[CMSG_SPACE(sizeof(int))]; memset(ctrl,0,sizeof(ctrl)); char marker='F'; struct iovec fdiov={&marker,1}; memset(&sm,0,sizeof(sm)); sm.msg_iov=&fdiov; sm.msg_iovlen=1; sm.msg_control=ctrl; sm.msg_controllen=sizeof(ctrl); struct cmsghdr *ch=CMSG_FIRSTHDR(&sm); ch->cmsg_level=SOL_SOCKET; ch->cmsg_type=SCM_RIGHTS; ch->cmsg_len=CMSG_LEN(sizeof(int)); memcpy(CMSG_DATA(ch),&pfd[0],sizeof(int)); if(sendmsg(sp[0],&sm,0)!=1) die("sendmsg fd"); char fdmarker=0; struct iovec friov={&fdmarker,1}; char rctrl[CMSG_SPACE(sizeof(int))]; memset(rctrl,0,sizeof(rctrl)); memset(&rm,0,sizeof(rm)); rm.msg_iov=&friov; rm.msg_iovlen=1; rm.msg_control=rctrl; rm.msg_controllen=sizeof(rctrl); if(recvmsg(sp[1],&rm,0)!=1||fdmarker!='F') die("recvmsg fd"); ch=CMSG_FIRSTHDR(&rm); if(!ch||ch->cmsg_level!=SOL_SOCKET||ch->cmsg_type!=SCM_RIGHTS) die("recvmsg cmsg"); int gotfd=-1; memcpy(&gotfd,CMSG_DATA(ch),sizeof(int)); if(write(pfd[1],"Q",1)!=1) die("pipe write"); char q=0; if(read(gotfd,&q,1)!=1||q!='Q') die("recv fd read"); close(gotfd); close(pfd[0]); close(pfd[1]); close(sp[0]); close(sp[1]);
+ char local[16]="self"; char out[16]={0}; struct iovec li={out,5}, ri={local,5}; ssize_t vr=syscall(SYS_process_vm_readv,getpid(),&li,1,&ri,1,0); if(vr!=5||strcmp(out,"self")) die("process_vm_readv"); char in[16]="that"; struct iovec liw={in,5}, riw={local,5}; ssize_t vw=syscall(SYS_process_vm_writev,getpid(),&liw,1,&riw,1,0); if(vw!=5||strcmp(local,"that")) die("process_vm_writev"); void *big=mmap(NULL,0x2000001000ULL,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,-1,0); if(big==MAP_FAILED) die("mmap big noreserve"); void *mid=mmap(NULL,0x10000000ULL,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE,-1,0); if(mid==MAP_FAILED) die("mmap mid noreserve"); uintptr_t ba=(uintptr_t)big, ma=(uintptr_t)mid; if(ma>=ba&&ma<ba+0x2000001000ULL) die("mmap noreserve overlap"); volatile char *mp=(volatile char*)mid; mp[0]=1; mp[0x1000]=2; munmap(mid,0x10000000ULL); munmap(big,0x2000001000ULL);
  puts("syscall-gaps-ok"); return 0;
 }
 EOF
@@ -354,6 +401,73 @@ int main(void) {
 }
 EOF
 
+    cat >"$dir/addsub_cbz.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint64_t sub_cbnz64(uint64_t n) {
+    uint64_t v;
+    __asm__ volatile(
+        "mov %0, %1\n"
+        "1: sub %0, %0, #1\n"
+        "cbnz %0, 1b\n"
+        : "=&r"(v) : "r"(n));
+    return v;
+}
+
+static uint64_t add_cbnz64(uint64_t n) {
+    uint64_t v;
+    __asm__ volatile(
+        "mov %0, %1\n"
+        "1: add %0, %0, #1\n"
+        "cbnz %0, 1b\n"
+        : "=&r"(v) : "r"(n));
+    return v;
+}
+
+static uint64_t sub_cbz64(uint64_t n) {
+    uint64_t v, out;
+    __asm__ volatile(
+        "mov %0, %2\n"
+        "sub %0, %0, #1\n"
+        "cbz %0, 1f\n"
+        "mov %1, #99\n"
+        "b 2f\n"
+        "1: mov %1, #7\n"
+        "2:\n"
+        : "=&r"(v), "=&r"(out) : "r"(n));
+    return v + out;
+}
+
+static uint32_t add_cbz32(uint32_t n) {
+    uint32_t v, out;
+    __asm__ volatile(
+        "mov %w0, %w2\n"
+        "add %w0, %w0, #1\n"
+        "cbz %w0, 1f\n"
+        "mov %w1, #99\n"
+        "b 2f\n"
+        "1: mov %w1, #11\n"
+        "2:\n"
+        : "=&r"(v), "=&r"(out) : "r"(n));
+    return v + out;
+}
+
+int main(void) {
+    int fail = 0;
+    if (sub_cbnz64(5) != 0) fail++;
+    if (add_cbnz64(UINT64_MAX - 2) != 0) fail++;
+    if (sub_cbz64(1) != 7) fail++;
+    if (add_cbz32(UINT32_MAX) != 11) fail++;
+    if (fail) {
+        printf("addsub-cbz-fail %d\n", fail);
+        return 1;
+    }
+    puts("addsub-cbz-ok");
+    return 0;
+}
+EOF
+
     cat >"$dir/signal_ucontext.c" <<'EOF'
 #define _GNU_SOURCE
 #include <signal.h>
@@ -417,6 +531,1850 @@ int main(void) {
         return 1;
 
     puts("signal-ucontext-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/precise_fault_pc.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_read_pc;
+uintptr_t expected_write_pc;
+
+void precise_fault_read(void);
+void precise_fault_write(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global precise_fault_read\n"
+"precise_fault_read:\n"
+"    adrp x10, expected_read_pc\n"
+"    add x10, x10, :lo12:expected_read_pc\n"
+"    adr x9, 1f\n"
+"    str x9, [x10]\n"
+"    mov x11, xzr\n"
+"1:  ldr x12, [x11]\n"
+"    ret\n"
+".global precise_fault_write\n"
+"precise_fault_write:\n"
+"    adrp x10, expected_write_pc\n"
+"    add x10, x10, :lo12:expected_write_pc\n"
+"    adr x9, 1f\n"
+"    str x9, [x10]\n"
+"    mov x11, xzr\n"
+"1:  str xzr, [x11]\n"
+"    ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile int stage;
+static volatile uintptr_t observed_pc[2];
+static volatile uintptr_t observed_fault[2];
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    int idx = stage - 1;
+    if (idx >= 0 && idx < 2) {
+        observed_pc[idx] = (uintptr_t)uc->uc_mcontext.pc;
+        observed_fault[idx] = (uintptr_t)si->si_addr;
+    }
+    siglongjmp(jb, 1);
+}
+
+static int run_fault(void (*fn)(void), int new_stage) {
+    stage = new_stage;
+    if (sigsetjmp(jb, 1) == 0) {
+        fn();
+        return 1;
+    }
+    return 0;
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+
+    int fail = 0;
+    fail += run_fault(precise_fault_read, 1);
+    fail += run_fault(precise_fault_write, 2);
+
+    if (observed_fault[0] != 0 || observed_pc[0] != expected_read_pc) {
+        fprintf(stderr, "read pc mismatch expected=%#lx observed=%#lx fault=%#lx\n",
+                (unsigned long)expected_read_pc, (unsigned long)observed_pc[0],
+                (unsigned long)observed_fault[0]);
+        fail++;
+    }
+    if (observed_fault[1] != 0 || observed_pc[1] != expected_write_pc) {
+        fprintf(stderr, "write pc mismatch expected=%#lx observed=%#lx fault=%#lx\n",
+                (unsigned long)expected_write_pc, (unsigned long)observed_pc[1],
+                (unsigned long)observed_fault[1]);
+        fail++;
+    }
+
+    if (fail)
+        return 1;
+    puts("precise-fault-pc-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_addsub_ldr_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, #-8\n"
+"    add x10, x9, #8\n"
+"1:  ldr x11, [x10]\n"
+"    ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 0) {
+        fprintf(stderr, "bad fused fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10);
+        return 1;
+    }
+    puts("fused-addsub-ldr-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/addsub_ldr32_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint32_t data[8] = {
+    0x11111111u, 0x22222222u, 0x89abcdefu, 0xfedcba98u,
+    0x55555555u, 0x66666666u, 0x77777777u, 0x88888888u
+};
+
+int main(void) {
+    uint64_t loaded0 = 0, loaded1 = 0;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "add x10, x9, #4\n"
+        "ldr w11, [x10, #4]\n"
+        "add x12, x9, #12\n"
+        "ldr w12, [x12]\n"
+        "mov %[loaded0], x11\n"
+        "mov %[loaded1], x12\n"
+        : [loaded0] "=r"(loaded0), [loaded1] "=r"(loaded1)
+        : [base] "r"(data)
+        : "x9", "x10", "x11", "x12", "memory", "cc");
+    if (loaded0 != data[2] || loaded1 != data[3]) {
+        printf("addsub-ldr32-fail %llx %llx\n",
+               (unsigned long long)loaded0, (unsigned long long)loaded1);
+        return 1;
+    }
+    puts("addsub-ldr32-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_addsub_ldr32_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, #-4\n"
+"    movz x11, #0x5678\n"
+"    movk x11, #0x1234, lsl #16\n"
+"    movk x11, #0x5678, lsl #32\n"
+"    movk x11, #0x1234, lsl #48\n"
+"    add x10, x9, #4\n"
+"1:  ldr w11, [x10]\n"
+"    ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_x11;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_x11 = (uintptr_t)uc->uc_mcontext.regs[11];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    const uintptr_t marker = 0x1234567812345678ULL;
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 0 || observed_x11 != marker) {
+        fprintf(stderr, "bad fused addsub ldr32 fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx x11=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_x11);
+        return 1;
+    }
+    puts("fused-addsub-ldr32-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/addsub_ldr16_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint16_t data[8] = {
+    0x1111, 0x2222, 0xabcd, 0xcdef,
+    0x5555, 0x6666, 0x7777, 0x8888
+};
+
+int main(void) {
+    uint64_t loaded0 = 0, loaded1 = 0;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "add x10, x9, #2\n"
+        "ldrh w11, [x10, #2]\n"
+        "add x12, x9, #6\n"
+        "ldrh w12, [x12]\n"
+        "mov %[loaded0], x11\n"
+        "mov %[loaded1], x12\n"
+        : [loaded0] "=r"(loaded0), [loaded1] "=r"(loaded1)
+        : [base] "r"(data)
+        : "x9", "x10", "x11", "x12", "memory", "cc");
+    if (loaded0 != data[2] || loaded1 != data[3]) {
+        printf("addsub-ldr16-fail %llx %llx\n",
+               (unsigned long long)loaded0, (unsigned long long)loaded1);
+        return 1;
+    }
+    puts("addsub-ldr16-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_addsub_ldr16_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, #-2\n"
+"    movz x11, #0x5678\n"
+"    movk x11, #0x1234, lsl #16\n"
+"    movk x11, #0x5678, lsl #32\n"
+"    movk x11, #0x1234, lsl #48\n"
+"    add x10, x9, #2\n"
+"1:  ldrh w11, [x10]\n"
+"    ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_x11;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_x11 = (uintptr_t)uc->uc_mcontext.regs[11];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    const uintptr_t marker = 0x1234567812345678ULL;
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 0 || observed_x11 != marker) {
+        fprintf(stderr, "bad fused addsub ldr16 fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx x11=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_x11);
+        return 1;
+    }
+    puts("fused-addsub-ldr16-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/addsub_ldr8_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint8_t data[8] = {0x11, 0x22, 0xab, 0xcd, 0x55, 0x66, 0x77, 0x88};
+
+int main(void) {
+    uint64_t loaded0 = 0, loaded1 = 0;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "add x10, x9, #1\n"
+        "ldrb w11, [x10, #1]\n"
+        "add x12, x9, #3\n"
+        "ldrb w12, [x12]\n"
+        "mov %[loaded0], x11\n"
+        "mov %[loaded1], x12\n"
+        : [loaded0] "=r"(loaded0), [loaded1] "=r"(loaded1)
+        : [base] "r"(data)
+        : "x9", "x10", "x11", "x12", "memory", "cc");
+    if (loaded0 != data[2] || loaded1 != data[3]) {
+        printf("addsub-ldr8-fail %llx %llx\n",
+               (unsigned long long)loaded0, (unsigned long long)loaded1);
+        return 1;
+    }
+    puts("addsub-ldr8-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_addsub_ldr8_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, #-1\n"
+"    movz x11, #0x5678\n"
+"    movk x11, #0x1234, lsl #16\n"
+"    movk x11, #0x5678, lsl #32\n"
+"    movk x11, #0x1234, lsl #48\n"
+"    add x10, x9, #1\n"
+"1:  ldrb w11, [x10]\n"
+"    ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_x11;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_x11 = (uintptr_t)uc->uc_mcontext.regs[11];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    const uintptr_t marker = 0x1234567812345678ULL;
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 0 || observed_x11 != marker) {
+        fprintf(stderr, "bad fused addsub ldr8 fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx x11=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_x11);
+        return 1;
+    }
+    puts("fused-addsub-ldr8-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/addsub_str_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint64_t data[8] = {1,2,3,4,5,6,7,8};
+
+int main(void) {
+    uint64_t value = 0x123456789abcdef0ULL;
+    uint64_t *base = data;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "mov x11, %[value]\n"
+        "add x10, x9, #8\n"
+        "str x11, [x10, #8]\n"
+        "add x12, x9, #24\n"
+        "str x12, [x12]\n"
+        :
+        : [base] "r"(base), [value] "r"(value)
+        : "x9", "x10", "x11", "x12", "memory", "cc");
+    if (data[2] != value || data[3] != (uint64_t)&data[3]) {
+        printf("addsub-str-fail %llx %llx\n",
+               (unsigned long long)data[2], (unsigned long long)data[3]);
+        return 1;
+    }
+    puts("addsub-str-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_addsub_str_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, #-8\n"
+"    mov x10, #123\n"
+"    add x11, x9, #8\n"
+"1:  str x10, [x11]\n"
+"    ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_x11;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_x11 = (uintptr_t)uc->uc_mcontext.regs[11];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123 || observed_x11 != 0) {
+        fprintf(stderr, "bad fused addsub str fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx x11=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_x11);
+        return 1;
+    }
+    puts("fused-addsub-str-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/addsub_str32_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint32_t data[8] = {1,2,3,4,5,6,7,8};
+
+int main(void) {
+    uint64_t value = 0x123456789abcdef0ULL;
+    uint32_t *base = data;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "mov x11, %[value]\n"
+        "add x10, x9, #4\n"
+        "str w11, [x10, #4]\n"
+        "add x12, x9, #12\n"
+        "str w12, [x12]\n"
+        :
+        : [base] "r"(base), [value] "r"(value)
+        : "x9", "x10", "x11", "x12", "memory", "cc");
+    if (data[2] != (uint32_t)value || data[3] != (uint32_t)(uintptr_t)&data[3]) {
+        printf("addsub-str32-fail %x %x\n", data[2], data[3]);
+        return 1;
+    }
+    puts("addsub-str32-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_addsub_str32_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, #-4\n"
+"    mov x10, #123\n"
+"    add x11, x9, #4\n"
+"1:  str w10, [x11]\n"
+"    ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_x11;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_x11 = (uintptr_t)uc->uc_mcontext.regs[11];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123 || observed_x11 != 0) {
+        fprintf(stderr, "bad fused addsub str32 fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx x11=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_x11);
+        return 1;
+    }
+    puts("fused-addsub-str32-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/addsub_str16_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint16_t data[8] = {1,2,3,4,5,6,7,8};
+
+int main(void) {
+    uint64_t value = 0x123456789abcdef0ULL;
+    uint16_t *base = data;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "mov x11, %[value]\n"
+        "add x10, x9, #2\n"
+        "strh w11, [x10, #2]\n"
+        "add x12, x9, #6\n"
+        "strh w12, [x12]\n"
+        :
+        : [base] "r"(base), [value] "r"(value)
+        : "x9", "x10", "x11", "x12", "memory", "cc");
+    if (data[2] != (uint16_t)value || data[3] != (uint16_t)(uintptr_t)&data[3]) {
+        printf("addsub-str16-fail %x %x\n", data[2], data[3]);
+        return 1;
+    }
+    puts("addsub-str16-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_addsub_str16_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, #-2\n"
+"    mov x10, #123\n"
+"    add x11, x9, #2\n"
+"1:  strh w10, [x11]\n"
+"    ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_x11;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_x11 = (uintptr_t)uc->uc_mcontext.regs[11];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123 || observed_x11 != 0) {
+        fprintf(stderr, "bad fused addsub str16 fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx x11=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_x11);
+        return 1;
+    }
+    puts("fused-addsub-str16-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/addsub_str8_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint8_t data[8] = {1,2,3,4,5,6,7,8};
+
+int main(void) {
+    uint64_t value = 0x123456789abcdef0ULL;
+    uint8_t *base = data;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "mov x11, %[value]\n"
+        "add x10, x9, #1\n"
+        "strb w11, [x10, #1]\n"
+        "add x12, x9, #3\n"
+        "strb w12, [x12]\n"
+        :
+        : [base] "r"(base), [value] "r"(value)
+        : "x9", "x10", "x11", "x12", "memory", "cc");
+    if (data[2] != (uint8_t)value || data[3] != (uint8_t)(uintptr_t)&data[3]) {
+        printf("addsub-str8-fail %x %x\n", data[2], data[3]);
+        return 1;
+    }
+    puts("addsub-str8-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_addsub_str8_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, #-1\n"
+"    mov x10, #123\n"
+"    add x11, x9, #1\n"
+"1:  strb w10, [x11]\n"
+"    ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_x11;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_x11 = (uintptr_t)uc->uc_mcontext.regs[11];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123 || observed_x11 != 0) {
+        fprintf(stderr, "bad fused addsub str8 fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx x11=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_x11);
+        return 1;
+    }
+    puts("fused-addsub-str8-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/ldr_cbz_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint64_t data[2] = {0, 7};
+
+int main(void) {
+    uint64_t a = 0, b = 0, loaded0 = 99, loaded1 = 0;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "ldr %[loaded0], [x9, #0]\n"
+        "cbz %[loaded0], 1f\n"
+        "mov %[a], #99\n"
+        "b 2f\n"
+        "1: mov %[a], #11\n"
+        "2:\n"
+        "ldr %[loaded1], [x9, #8]\n"
+        "cbnz %[loaded1], 3f\n"
+        "mov %[b], #99\n"
+        "b 4f\n"
+        "3: mov %[b], #22\n"
+        "4:\n"
+        : [a] "=&r"(a), [b] "=&r"(b), [loaded0] "=&r"(loaded0), [loaded1] "=&r"(loaded1)
+        : [base] "r"(data)
+        : "x9", "memory", "cc");
+    if (a != 11 || b != 22 || loaded0 != 0 || loaded1 != 7) {
+        printf("ldr-cbz-fail %llu %llu %llu %llu\n",
+               (unsigned long long)a, (unsigned long long)b,
+               (unsigned long long)loaded0, (unsigned long long)loaded1);
+        return 1;
+    }
+    puts("ldr-cbz-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/ldr64_sp_cbz_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t sp_ldr_cbz_case(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global sp_ldr_cbz_case\n"
+"sp_ldr_cbz_case:\n"
+"    sub sp, sp, #32\n"
+"    mov x9, xzr\n"
+"    str x9, [sp, #8]\n"
+"    mov x9, #7\n"
+"    str x9, [sp, #16]\n"
+"    mov x0, xzr\n"
+"    ldr x10, [sp, #8]\n"
+"    cbz x10, 1f\n"
+"    add x0, x0, #100\n"
+"    b 2f\n"
+"1:  add x0, x0, #11\n"
+"2:  ldr x11, [sp, #16]\n"
+"    cbnz x11, 3f\n"
+"    add x0, x0, #100\n"
+"    b 4f\n"
+"3:  add x0, x0, #22\n"
+"4:  add x0, x0, x11\n"
+"    add sp, sp, #32\n"
+"    ret\n"
+);
+
+int main(void) {
+    uint64_t got = sp_ldr_cbz_case();
+    if (got != 40) {
+        printf("ldr64-sp-cbz-fail %llu\n", (unsigned long long)got);
+        return 1;
+    }
+    puts("ldr64-sp-cbz-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_ldr64_sp_cbz_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x10, #123\n"
+"    mov x9, xzr\n"
+"    mov sp, x9\n"
+"1:  ldr x10, [sp]\n"
+"    cbz x10, 2f\n"
+"2:  ret\n"
+);
+
+static sigjmp_buf jb;
+static char alt_stack[16384];
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_sp;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_sp = (uintptr_t)uc->uc_mcontext.sp;
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    stack_t ss = {0};
+    ss.ss_sp = alt_stack;
+    ss.ss_size = sizeof(alt_stack);
+    if (sigaltstack(&ss, NULL) != 0)
+        return 1;
+
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123 || observed_sp != 0) {
+        fprintf(stderr, "bad fused ldr64 sp cbz fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx sp=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_sp);
+        return 1;
+    }
+    puts("fused-ldr64-sp-cbz-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/ldrz_sp_cbz_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+uint64_t sp_ldrz_cbz_case(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global sp_ldrz_cbz_case\n"
+"sp_ldrz_cbz_case:\n"
+"    sub sp, sp, #64\n"
+"    str wzr, [sp, #8]\n"
+"    mov w9, #1\n"
+"    movk w9, #0x8000, lsl #16\n"
+"    str w9, [sp, #12]\n"
+"    strh wzr, [sp, #16]\n"
+"    mov w9, #0x8001\n"
+"    strh w9, [sp, #18]\n"
+"    strb wzr, [sp, #20]\n"
+"    mov w9, #0x81\n"
+"    strb w9, [sp, #21]\n"
+"    mov x0, xzr\n"
+"    ldr w10, [sp, #8]\n"
+"    cbz w10, 1f\n"
+"    add x0, x0, #100\n"
+"    b 2f\n"
+"1:  add x0, x0, #1\n"
+"2:  ldr w11, [sp, #12]\n"
+"    cbnz w11, 3f\n"
+"    add x0, x0, #100\n"
+"    b 4f\n"
+"3:  add x0, x0, #2\n"
+"4:  mov w9, #1\n"
+"    movk w9, #0x8000, lsl #16\n"
+"    cmp w11, w9\n"
+"    cset x12, eq\n"
+"    add x0, x0, x12, lsl #2\n"
+"    ldrh w13, [sp, #16]\n"
+"    cbz w13, 5f\n"
+"    add x0, x0, #100\n"
+"    b 6f\n"
+"5:  add x0, x0, #8\n"
+"6:  ldrh w14, [sp, #18]\n"
+"    cbnz w14, 7f\n"
+"    add x0, x0, #100\n"
+"    b 8f\n"
+"7:  add x0, x0, #16\n"
+"8:  mov w9, #0x8001\n"
+"    cmp w14, w9\n"
+"    cset x12, eq\n"
+"    add x0, x0, x12, lsl #5\n"
+"    ldrb w15, [sp, #20]\n"
+"    cbz w15, 9f\n"
+"    add x0, x0, #100\n"
+"    b 10f\n"
+"9:  add x0, x0, #64\n"
+"10: ldrb w16, [sp, #21]\n"
+"    cbnz w16, 11f\n"
+"    add x0, x0, #100\n"
+"    b 12f\n"
+"11: add x0, x0, #128\n"
+"12: cmp w16, #0x81\n"
+"    cset x12, eq\n"
+"    add x0, x0, x12, lsl #8\n"
+"    add sp, sp, #64\n"
+"    ret\n"
+);
+
+int main(void) {
+    uint64_t got = sp_ldrz_cbz_case();
+    if (got != 511) {
+        printf("ldrz-sp-cbz-fail %llu\n", (unsigned long long)got);
+        return 1;
+    }
+    puts("ldrz-sp-cbz-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_ldrz_sp_cbz_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x10, #123\n"
+"    mov x9, xzr\n"
+"    mov sp, x9\n"
+"1:  ldrb w10, [sp]\n"
+"    cbz w10, 2f\n"
+"2:  ret\n"
+);
+
+static sigjmp_buf jb;
+static char alt_stack[16384];
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_sp;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_sp = (uintptr_t)uc->uc_mcontext.sp;
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    stack_t ss = {0};
+    ss.ss_sp = alt_stack;
+    ss.ss_size = sizeof(alt_stack);
+    if (sigaltstack(&ss, NULL) != 0)
+        return 1;
+
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123 || observed_sp != 0) {
+        fprintf(stderr, "bad fused ldrz sp cbz fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx sp=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_sp);
+        return 1;
+    }
+    puts("fused-ldrz-sp-cbz-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/ldrsw_cbz_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static int32_t data[2] = {0, -1};
+uint64_t sp_ldrsw_cbz_case(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global sp_ldrsw_cbz_case\n"
+"sp_ldrsw_cbz_case:\n"
+"    sub sp, sp, #32\n"
+"    str wzr, [sp, #8]\n"
+"    mov w9, #-7\n"
+"    str w9, [sp, #12]\n"
+"    mov x0, xzr\n"
+"    ldrsw x12, [sp, #8]\n"
+"    cbz x12, 1f\n"
+"    add x0, x0, #100\n"
+"    b 2f\n"
+"1:  add x0, x0, #11\n"
+"2:  ldrsw x13, [sp, #12]\n"
+"    cbnz x13, 3f\n"
+"    add x0, x0, #100\n"
+"    b 4f\n"
+"3:  add x0, x0, #22\n"
+"4:  mov x14, #-7\n"
+"    cmp x13, x14\n"
+"    cset x14, eq\n"
+"    add x0, x0, x14\n"
+"    add sp, sp, #32\n"
+"    ret\n"
+);
+
+int main(void) {
+    uint64_t a = 0, b = 0, c = 0, d = 0, loaded0 = 99, loaded1 = 0;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "ldrsw x10, [x9, #0]\n"
+        "cbz x10, 1f\n"
+        "mov %[a], #99\n"
+        "b 2f\n"
+        "1: mov %[a], #11\n"
+        "2:\n"
+        "ldrsw x11, [x9, #4]\n"
+        "cbnz x11, 3f\n"
+        "mov %[b], #99\n"
+        "b 4f\n"
+        "3: mov %[b], #22\n"
+        "4:\n"
+        "ldrsw x12, [x9, #0]\n"
+        "cbz w12, 5f\n"
+        "mov %[c], #99\n"
+        "b 6f\n"
+        "5: mov %[c], #33\n"
+        "6:\n"
+        "ldrsw x13, [x9, #4]\n"
+        "cbnz w13, 7f\n"
+        "mov %[d], #99\n"
+        "b 8f\n"
+        "7: mov %[d], #44\n"
+        "8:\n"
+        "mov %[loaded0], x10\n"
+        "mov %[loaded1], x11\n"
+        : [a] "=&r"(a), [b] "=&r"(b), [c] "=&r"(c), [d] "=&r"(d),
+          [loaded0] "=&r"(loaded0), [loaded1] "=&r"(loaded1)
+        : [base] "r"(data)
+        : "x9", "x10", "x11", "x12", "x13", "memory", "cc");
+    uint64_t sp = sp_ldrsw_cbz_case();
+    if (a != 11 || b != 22 || c != 33 || d != 44 || loaded0 != 0 || loaded1 != UINT64_MAX || sp != 34) {
+        printf("ldrsw-cbz-fail %llu %llu %llu %llu %llx %llx %llu\n",
+               (unsigned long long)a, (unsigned long long)b,
+               (unsigned long long)c, (unsigned long long)d,
+               (unsigned long long)loaded0, (unsigned long long)loaded1,
+               (unsigned long long)sp);
+        return 1;
+    }
+    puts("ldrsw-cbz-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_ldrsw_cbz_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x10, #123\n"
+"    mov x9, xzr\n"
+"    mov sp, x9\n"
+"1:  ldrsw x10, [sp]\n"
+"    cbz x10, 2f\n"
+"2:  ret\n"
+);
+
+static sigjmp_buf jb;
+static char alt_stack[16384];
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_sp;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_sp = (uintptr_t)uc->uc_mcontext.sp;
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    stack_t ss = {0};
+    ss.ss_sp = alt_stack;
+    ss.ss_size = sizeof(alt_stack);
+    if (sigaltstack(&ss, NULL) != 0)
+        return 1;
+
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123 || observed_sp != 0) {
+        fprintf(stderr, "bad fused ldrsw cbz fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx sp=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_sp);
+        return 1;
+    }
+    puts("fused-ldrsw-cbz-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/ldrsx8_16_cbz_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static int8_t data8[2] = {0, -1};
+static int16_t data16[2] = {0, -7};
+uint64_t sp_ldrsx_cbz_case(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global sp_ldrsx_cbz_case\n"
+"sp_ldrsx_cbz_case:\n"
+"    sub sp, sp, #32\n"
+"    strb wzr, [sp, #8]\n"
+"    mov w9, #-5\n"
+"    strh w9, [sp, #10]\n"
+"    mov x0, xzr\n"
+"    ldrsb x10, [sp, #8]\n"
+"    cbz x10, 1f\n"
+"    add x0, x0, #100\n"
+"    b 2f\n"
+"1:  add x0, x0, #11\n"
+"2:  ldrsh w11, [sp, #10]\n"
+"    cbnz w11, 3f\n"
+"    add x0, x0, #100\n"
+"    b 4f\n"
+"3:  add x0, x0, #22\n"
+"4:  mov w12, #-5\n"
+"    cmp w11, w12\n"
+"    cset x12, eq\n"
+"    add x0, x0, x12\n"
+"    add sp, sp, #32\n"
+"    ret\n"
+);
+
+int main(void) {
+    uint64_t b64 = 0, b32 = 0, h64 = 0, h32 = 0, sum = 0;
+    __asm__ volatile(
+        "mov x9, %[d8]\n"
+        "ldrsb x10, [x9, #1]\n"
+        "cbnz x10, 1f\n"
+        "add %[sum], %[sum], #100\n"
+        "b 2f\n"
+        "1: add %[sum], %[sum], #1\n"
+        "2: ldrsb w11, [x9, #1]\n"
+        "cbnz w11, 3f\n"
+        "add %[sum], %[sum], #100\n"
+        "b 4f\n"
+        "3: add %[sum], %[sum], #2\n"
+        "4: mov x9, %[d16]\n"
+        "ldrsh x12, [x9, #2]\n"
+        "cbnz x12, 5f\n"
+        "add %[sum], %[sum], #100\n"
+        "b 6f\n"
+        "5: add %[sum], %[sum], #4\n"
+        "6: ldrsh w13, [x9, #2]\n"
+        "cbnz w13, 7f\n"
+        "add %[sum], %[sum], #100\n"
+        "b 8f\n"
+        "7: add %[sum], %[sum], #8\n"
+        "8: mov x9, %[d8]\n"
+        "ldrsb x14, [x9, #1]\n"
+        "cbnz w14, 9f\n"
+        "add %[sum], %[sum], #100\n"
+        "b 10f\n"
+        "9: add %[sum], %[sum], #16\n"
+        "10: ldrsb w15, [x9, #0]\n"
+        "cbz x15, 11f\n"
+        "add %[sum], %[sum], #100\n"
+        "b 12f\n"
+        "11: add %[sum], %[sum], #32\n"
+        "12: mov x9, %[d16]\n"
+        "ldrsh x16, [x9, #2]\n"
+        "cbnz w16, 13f\n"
+        "add %[sum], %[sum], #100\n"
+        "b 14f\n"
+        "13: add %[sum], %[sum], #64\n"
+        "14: ldrsh w17, [x9, #0]\n"
+        "cbz x17, 15f\n"
+        "add %[sum], %[sum], #100\n"
+        "b 16f\n"
+        "15: add %[sum], %[sum], #128\n"
+        "16: mov %[b64], x10\n"
+        "mov %[b32], x11\n"
+        "mov %[h64], x12\n"
+        "mov %[h32], x13\n"
+        : [sum] "+r"(sum), [b64] "=&r"(b64), [b32] "=&r"(b32), [h64] "=&r"(h64), [h32] "=&r"(h32)
+        : [d8] "r"(data8), [d16] "r"(data16)
+        : "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory", "cc");
+    uint64_t sp = sp_ldrsx_cbz_case();
+    if (sum != 255 || b64 != UINT64_MAX || b32 != 0xffffffffULL ||
+        h64 != (uint64_t)-7 || h32 != 0xfffffff9ULL || sp != 34) {
+        printf("ldrsx8-16-cbz-fail sum=%llu b64=%llx b32=%llx h64=%llx h32=%llx sp=%llu\n",
+               (unsigned long long)sum, (unsigned long long)b64,
+               (unsigned long long)b32, (unsigned long long)h64,
+               (unsigned long long)h32, (unsigned long long)sp);
+        return 1;
+    }
+    puts("ldrsx8-16-cbz-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_ldrsx8_16_cbz_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x10, #123\n"
+"    mov x9, xzr\n"
+"    mov sp, x9\n"
+"1:  ldrsh w10, [sp]\n"
+"    cbz w10, 2f\n"
+"2:  ret\n"
+);
+
+static sigjmp_buf jb;
+static char alt_stack[16384];
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+static volatile uintptr_t observed_sp;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    observed_sp = (uintptr_t)uc->uc_mcontext.sp;
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    stack_t ss = {0};
+    ss.ss_sp = alt_stack;
+    ss.ss_size = sizeof(alt_stack);
+    if (sigaltstack(&ss, NULL) != 0)
+        return 1;
+
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123 || observed_sp != 0) {
+        fprintf(stderr, "bad fused ldrsx8/16 cbz fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx sp=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10,
+                (unsigned long)observed_sp);
+        return 1;
+    }
+    puts("fused-ldrsx8-16-cbz-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/ldr32_cbz_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint32_t data[2] = {0, 0x80000001u};
+
+int main(void) {
+    uint64_t a = 0, b = 0, loaded0 = 99, loaded1 = 0;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "ldr w11, [x9, #0]\n"
+        "cbz w11, 1f\n"
+        "mov %[a], #99\n"
+        "b 2f\n"
+        "1: mov %[a], #11\n"
+        "2:\n"
+        "ldr w12, [x9, #4]\n"
+        "cbnz w12, 3f\n"
+        "mov %[b], #99\n"
+        "b 4f\n"
+        "3: mov %[b], #22\n"
+        "4:\n"
+        "mov %[loaded0], x11\n"
+        "mov %[loaded1], x12\n"
+        : [a] "=&r"(a), [b] "=&r"(b), [loaded0] "=&r"(loaded0), [loaded1] "=&r"(loaded1)
+        : [base] "r"(data)
+        : "x9", "x11", "x12", "memory", "cc");
+    if (a != 11 || b != 22 || loaded0 != 0 || loaded1 != data[1]) {
+        printf("ldr32-cbz-fail %llu %llu %llx %llx\n",
+               (unsigned long long)a, (unsigned long long)b,
+               (unsigned long long)loaded0, (unsigned long long)loaded1);
+        return 1;
+    }
+    puts("ldr32-cbz-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_ldr32_cbz_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, xzr\n"
+"    mov x10, #123\n"
+"1:  ldr w10, [x9]\n"
+"    cbz w10, 2f\n"
+"2:  ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123) {
+        fprintf(stderr, "bad fused ldr32 cbz fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10);
+        return 1;
+    }
+    puts("fused-ldr32-cbz-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/ldr16_cbz_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint16_t data[2] = {0, 0x8001u};
+
+int main(void) {
+    uint64_t a = 0, b = 0, loaded0 = 99, loaded1 = 0;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "ldrh w11, [x9, #0]\n"
+        "cbz w11, 1f\n"
+        "mov %[a], #99\n"
+        "b 2f\n"
+        "1: mov %[a], #11\n"
+        "2:\n"
+        "ldrh w12, [x9, #2]\n"
+        "cbnz w12, 3f\n"
+        "mov %[b], #99\n"
+        "b 4f\n"
+        "3: mov %[b], #22\n"
+        "4:\n"
+        "mov %[loaded0], x11\n"
+        "mov %[loaded1], x12\n"
+        : [a] "=&r"(a), [b] "=&r"(b), [loaded0] "=&r"(loaded0), [loaded1] "=&r"(loaded1)
+        : [base] "r"(data)
+        : "x9", "x11", "x12", "memory", "cc");
+    if (a != 11 || b != 22 || loaded0 != 0 || loaded1 != data[1]) {
+        printf("ldr16-cbz-fail %llu %llu %llx %llx\n",
+               (unsigned long long)a, (unsigned long long)b,
+               (unsigned long long)loaded0, (unsigned long long)loaded1);
+        return 1;
+    }
+    puts("ldr16-cbz-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_ldr16_cbz_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, xzr\n"
+"    mov x10, #123\n"
+"1:  ldrh w10, [x9]\n"
+"    cbz w10, 2f\n"
+"2:  ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123) {
+        fprintf(stderr, "bad fused ldr16 cbz fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10);
+        return 1;
+    }
+    puts("fused-ldr16-cbz-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/ldr8_cbz_fusion.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+
+static uint8_t data[2] = {0, 0x81u};
+
+int main(void) {
+    uint64_t a = 0, b = 0, loaded0 = 99, loaded1 = 0;
+    __asm__ volatile(
+        "mov x9, %[base]\n"
+        "ldrb w11, [x9, #0]\n"
+        "cbz w11, 1f\n"
+        "mov %[a], #99\n"
+        "b 2f\n"
+        "1: mov %[a], #11\n"
+        "2:\n"
+        "ldrb w12, [x9, #1]\n"
+        "cbnz w12, 3f\n"
+        "mov %[b], #99\n"
+        "b 4f\n"
+        "3: mov %[b], #22\n"
+        "4:\n"
+        "mov %[loaded0], x11\n"
+        "mov %[loaded1], x12\n"
+        : [a] "=&r"(a), [b] "=&r"(b), [loaded0] "=&r"(loaded0), [loaded1] "=&r"(loaded1)
+        : [base] "r"(data)
+        : "x9", "x11", "x12", "memory", "cc");
+    if (a != 11 || b != 22 || loaded0 != 0 || loaded1 != data[1]) {
+        printf("ldr8-cbz-fail %llu %llu %llx %llx\n",
+               (unsigned long long)a, (unsigned long long)b,
+               (unsigned long long)loaded0, (unsigned long long)loaded1);
+        return 1;
+    }
+    puts("ldr8-cbz-fusion-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_ldr8_cbz_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, xzr\n"
+"    mov x10, #123\n"
+"1:  ldrb w10, [x9]\n"
+"    cbz w10, 2f\n"
+"2:  ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123) {
+        fprintf(stderr, "bad fused ldr8 cbz fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10);
+        return 1;
+    }
+    puts("fused-ldr8-cbz-fault-ok");
+    return 0;
+}
+EOF
+
+    cat >"$dir/fused_ldr_cbz_fault.c" <<'EOF'
+#define _GNU_SOURCE
+#include <signal.h>
+#include <setjmp.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <ucontext.h>
+
+uintptr_t expected_pc;
+void fused_fault(void);
+
+__asm__(
+".text\n"
+".align 2\n"
+".global fused_fault\n"
+"fused_fault:\n"
+"    adrp x12, expected_pc\n"
+"    add x12, x12, :lo12:expected_pc\n"
+"    adr x13, 1f\n"
+"    str x13, [x12]\n"
+"    mov x9, xzr\n"
+"    mov x10, #123\n"
+"1:  ldr x10, [x9]\n"
+"    cbz x10, 2f\n"
+"2:  ret\n"
+);
+
+static sigjmp_buf jb;
+static volatile uintptr_t observed_pc;
+static volatile uintptr_t observed_fault;
+static volatile uintptr_t observed_x10;
+
+static void handler(int sig, siginfo_t *si, void *uctx) {
+    (void)sig;
+    ucontext_t *uc = (ucontext_t *)uctx;
+    observed_pc = (uintptr_t)uc->uc_mcontext.pc;
+    observed_fault = (uintptr_t)si->si_addr;
+    observed_x10 = (uintptr_t)uc->uc_mcontext.regs[10];
+    siglongjmp(jb, 1);
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, NULL) != 0)
+        return 1;
+    if (sigsetjmp(jb, 1) == 0) {
+        fused_fault();
+        return 1;
+    }
+    if (observed_pc != expected_pc || observed_fault != 0 || observed_x10 != 123) {
+        fprintf(stderr, "bad fused ldr cbz fault expected_pc=%#lx pc=%#lx fault=%#lx x10=%#lx\n",
+                (unsigned long)expected_pc, (unsigned long)observed_pc,
+                (unsigned long)observed_fault, (unsigned long)observed_x10);
+        return 1;
+    }
+    puts("fused-ldr-cbz-fault-ok");
     return 0;
 }
 EOF
@@ -794,7 +2752,7 @@ write_report() {
 
 - Timestamp: $(date -Is)
 - ish binary: $ISH_BIN
-- rootfs: $ROOTFS
+- rootfs lanes: $ROOTFS_LANES
 - timeout: ${TIMEOUT_S}s
 - install timeout: ${INSTALL_TIMEOUT_S}s
 
@@ -806,24 +2764,26 @@ write_report() {
 
 ## Results
 
-| Stage | Test | Status | Detail |
-|---|---|---|---|
+| Lane | Stage | Test | Status | Detail |
+|---|---|---|---|---|
 $REPORT_ROWS
 EOF
 }
 
-main() {
-    [ -x "$ISH_BIN" ] || { echo "missing ish binary: $ISH_BIN" >&2; exit 1; }
-    [ -d "$ROOTFS" ] || { echo "missing rootfs: $ROOTFS" >&2; exit 1; }
+run_lane() {
+    LANE_NAME="$1"
+    ROOTFS="$2"
+
+    [ -d "$ROOTFS" ] || { echo "missing rootfs for lane $LANE_NAME: $ROOTFS" >&2; return 1; }
 
     ensure_guest_basics
 
     run_test base "shell" "echo shell-ok | grep -qx shell-ok"
-    run_test base "apk" "apk --version >/dev/null 2>&1"
+    run_test base "package manager" "if command -v apk >/dev/null 2>&1; then apk --version >/dev/null 2>&1; elif command -v apt-get >/dev/null 2>&1; then apt-get --version >/dev/null 2>&1; else exit 127; fi"
     run_test base "tmp file io" "echo file-ok > '$GUEST_WORK/base.txt' && grep -qx file-ok '$GUEST_WORK/base.txt'"
-    run_test base "symlink retarget normalization" "mkdir -p '$GUEST_WORK/path-cache' && cd '$GUEST_WORK/path-cache' && echo old > old.txt && echo new > new.txt && ln -sf old.txt current && grep -qx old current && ln -sf new.txt current && grep -qx new current"
+    run_test base "symlink retarget normalization" "rm -rf '$GUEST_WORK/path-cache' && mkdir -p '$GUEST_WORK/path-cache' && cd '$GUEST_WORK/path-cache' && echo old > old.txt && echo new > new.txt && ln -s old.txt current && grep -qx old current && rm -f current && ln -s new.txt current && grep -qx new current"
 
-    ensure_tools build-base:gcc
+    ensure_tools 'build-base|gcc:gcc'
     prepare_c_fixture
     run_test c "gcc version" "gcc --version | head -1"
     run_test c "compile + run" "cd '$GUEST_WORK/c' && gcc -O0 hello.c -o hello && ./hello | grep -q '^c-runtime-ok '"
@@ -831,12 +2791,45 @@ main() {
     run_test c "high-value syscall gaps" "cd '$GUEST_WORK/c' && gcc -O0 syscall_gaps.c -o syscall_gaps -lrt && ./syscall_gaps | grep -qx syscall-gaps-ok"
     run_test c "arm64 DC ZVA sysreg/instruction" "cd '$GUEST_WORK/c' && gcc -O0 dczva.c -o dczva && ./dczva | grep -qx dczva-ok"
     run_test c "arm64 signal ucontext layout" "cd '$GUEST_WORK/c' && gcc -O0 signal_ucontext.c -o signal_ucontext && ./signal_ucontext | grep -qx signal-ucontext-ok"
+    run_test c "arm64 precise fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie precise_fault_pc.c -o precise_fault_pc && ./precise_fault_pc | grep -qx precise-fault-pc-ok"
+    run_test c "arm64 fused addsub ldr fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_ldr_fault.c -o fused_addsub_ldr_fault && ./fused_addsub_ldr_fault | grep -qx fused-addsub-ldr-fault-ok"
+    run_test c "arm64 addsub ldr32 fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_ldr32_fusion.c -o addsub_ldr32_fusion && ./addsub_ldr32_fusion | grep -qx addsub-ldr32-fusion-ok"
+    run_test c "arm64 fused addsub ldr32 fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_ldr32_fault.c -o fused_addsub_ldr32_fault && ./fused_addsub_ldr32_fault | grep -qx fused-addsub-ldr32-fault-ok"
+    run_test c "arm64 addsub ldr16 fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_ldr16_fusion.c -o addsub_ldr16_fusion && ./addsub_ldr16_fusion | grep -qx addsub-ldr16-fusion-ok"
+    run_test c "arm64 fused addsub ldr16 fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_ldr16_fault.c -o fused_addsub_ldr16_fault && ./fused_addsub_ldr16_fault | grep -qx fused-addsub-ldr16-fault-ok"
+    run_test c "arm64 addsub ldr8 fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_ldr8_fusion.c -o addsub_ldr8_fusion && ./addsub_ldr8_fusion | grep -qx addsub-ldr8-fusion-ok"
+    run_test c "arm64 fused addsub ldr8 fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_ldr8_fault.c -o fused_addsub_ldr8_fault && ./fused_addsub_ldr8_fault | grep -qx fused-addsub-ldr8-fault-ok"
+    run_test c "arm64 addsub str fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_str_fusion.c -o addsub_str_fusion && ./addsub_str_fusion | grep -qx addsub-str-fusion-ok"
+    run_test c "arm64 fused addsub str fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_str_fault.c -o fused_addsub_str_fault && ./fused_addsub_str_fault | grep -qx fused-addsub-str-fault-ok"
+    run_test c "arm64 addsub str32 fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_str32_fusion.c -o addsub_str32_fusion && ./addsub_str32_fusion | grep -qx addsub-str32-fusion-ok"
+    run_test c "arm64 fused addsub str32 fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_str32_fault.c -o fused_addsub_str32_fault && ./fused_addsub_str32_fault | grep -qx fused-addsub-str32-fault-ok"
+    run_test c "arm64 addsub str16 fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_str16_fusion.c -o addsub_str16_fusion && ./addsub_str16_fusion | grep -qx addsub-str16-fusion-ok"
+    run_test c "arm64 fused addsub str16 fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_str16_fault.c -o fused_addsub_str16_fault && ./fused_addsub_str16_fault | grep -qx fused-addsub-str16-fault-ok"
+    run_test c "arm64 addsub str8 fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_str8_fusion.c -o addsub_str8_fusion && ./addsub_str8_fusion | grep -qx addsub-str8-fusion-ok"
+    run_test c "arm64 fused addsub str8 fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_addsub_str8_fault.c -o fused_addsub_str8_fault && ./fused_addsub_str8_fault | grep -qx fused-addsub-str8-fault-ok"
+    run_test c "arm64 ldr cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 ldr_cbz_fusion.c -o ldr_cbz_fusion && ./ldr_cbz_fusion | grep -qx ldr-cbz-fusion-ok"
+    run_test c "arm64 fused ldr cbz fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_ldr_cbz_fault.c -o fused_ldr_cbz_fault && ./fused_ldr_cbz_fault | grep -qx fused-ldr-cbz-fault-ok"
+    run_test c "arm64 ldr64 sp cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie ldr64_sp_cbz_fusion.c -o ldr64_sp_cbz_fusion && ./ldr64_sp_cbz_fusion | grep -qx ldr64-sp-cbz-fusion-ok"
+    run_test c "arm64 fused ldr64 sp cbz fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_ldr64_sp_cbz_fault.c -o fused_ldr64_sp_cbz_fault && ./fused_ldr64_sp_cbz_fault | grep -qx fused-ldr64-sp-cbz-fault-ok"
+    run_test c "arm64 ldrz sp cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie ldrz_sp_cbz_fusion.c -o ldrz_sp_cbz_fusion && ./ldrz_sp_cbz_fusion | grep -qx ldrz-sp-cbz-fusion-ok"
+    run_test c "arm64 fused ldrz sp cbz fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_ldrz_sp_cbz_fault.c -o fused_ldrz_sp_cbz_fault && ./fused_ldrz_sp_cbz_fault | grep -qx fused-ldrz-sp-cbz-fault-ok"
+    run_test c "arm64 ldrsw cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie ldrsw_cbz_fusion.c -o ldrsw_cbz_fusion && ./ldrsw_cbz_fusion | grep -qx ldrsw-cbz-fusion-ok"
+    run_test c "arm64 fused ldrsw cbz fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_ldrsw_cbz_fault.c -o fused_ldrsw_cbz_fault && ./fused_ldrsw_cbz_fault | grep -qx fused-ldrsw-cbz-fault-ok"
+    run_test c "arm64 ldrsx8/16 cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie ldrsx8_16_cbz_fusion.c -o ldrsx8_16_cbz_fusion && ./ldrsx8_16_cbz_fusion | grep -qx ldrsx8-16-cbz-fusion-ok"
+    run_test c "arm64 fused ldrsx8/16 cbz fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_ldrsx8_16_cbz_fault.c -o fused_ldrsx8_16_cbz_fault && ./fused_ldrsx8_16_cbz_fault | grep -qx fused-ldrsx8-16-cbz-fault-ok"
+    run_test c "arm64 ldr32 cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 ldr32_cbz_fusion.c -o ldr32_cbz_fusion && ./ldr32_cbz_fusion | grep -qx ldr32-cbz-fusion-ok"
+    run_test c "arm64 fused ldr32 cbz fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_ldr32_cbz_fault.c -o fused_ldr32_cbz_fault && ./fused_ldr32_cbz_fault | grep -qx fused-ldr32-cbz-fault-ok"
+    run_test c "arm64 ldr16 cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 ldr16_cbz_fusion.c -o ldr16_cbz_fusion && ./ldr16_cbz_fusion | grep -qx ldr16-cbz-fusion-ok"
+    run_test c "arm64 fused ldr16 cbz fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_ldr16_cbz_fault.c -o fused_ldr16_cbz_fault && ./fused_ldr16_cbz_fault | grep -qx fused-ldr16-cbz-fault-ok"
+    run_test c "arm64 ldr8 cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 ldr8_cbz_fusion.c -o ldr8_cbz_fusion && ./ldr8_cbz_fusion | grep -qx ldr8-cbz-fusion-ok"
+    run_test c "arm64 fused ldr8 cbz fault pc" "cd '$GUEST_WORK/c' && gcc -O0 -fno-pie -no-pie fused_ldr8_cbz_fault.c -o fused_ldr8_cbz_fault && ./fused_ldr8_cbz_fault | grep -qx fused-ldr8-cbz-fault-ok"
     run_test c "per-thread sigaltstack" "cd '$GUEST_WORK/c' && gcc -O0 sigaltstack_thread.c -o sigaltstack_thread -pthread && ./sigaltstack_thread | grep -qx sigaltstack-thread-ok"
     run_test c "arm64 CCMP/CCMN NV condition" "cd '$GUEST_WORK/c' && gcc -O0 ccmp_nv.c -o ccmp_nv && ./ccmp_nv | grep -qx ccmp-nv-ok"
     run_test c "arm64 barriers DMB/DSB/ISB" "cd '$GUEST_WORK/c' && gcc -O0 barriers.c -o barriers && ./barriers | grep -qx barriers-ok"
     run_test c "arm64 self-modifying code invalidation" "cd '$GUEST_WORK/c' && gcc -O0 smc.c -o smc && ./smc | grep -qx 'smc 1 2'"
+    run_test c "arm64 add/sub cbz fusion" "cd '$GUEST_WORK/c' && gcc -O0 addsub_cbz.c -o addsub_cbz && ./addsub_cbz | grep -qx addsub-cbz-ok"
 
-    ensure_tools go
+    ensure_tools 'go|golang-go:go'
     prepare_go_fixture
     run_test go "version" "go version"
     run_test go "env" "go env GOARCH GOOS GOROOT"
@@ -859,7 +2852,7 @@ main() {
     run_test node "npm version" "npm --version"
     run_test node "node run" "cd '$GUEST_WORK/node' && npm run --silent start | grep -qx node-runtime-ok"
 
-    ensure_tools python3 lua5.4 openjdk21-jdk:javac clojure
+    ensure_tools python3 lua5.4 'openjdk21-jdk|openjdk-21-jdk:javac' clojure
     run_test python "python3 version" "python3 --version"
     run_test python "python3 eval" "python3 -c 'print(\"python-runtime-ok\", sum(range(10)))' | grep -qx 'python-runtime-ok 45'"
     run_test lua "lua5.4 version" "lua5.4 -v"
@@ -867,10 +2860,11 @@ main() {
     run_test java "javac + java" "cd '$GUEST_WORK' && printf '%s\n' 'public class Hello { public static void main(String[] args) { System.out.println(\"java-runtime-ok\"); } }' > Hello.java && javac Hello.java && java -cp . Hello | grep -qx java-runtime-ok"
     run_test java "java interpreter fallback" "cd '$GUEST_WORK' && java -Xint -cp . Hello | grep -qx java-runtime-ok"
     run_test clojure "clojure.main eval" "java -cp /usr/share/clojure/clojure.jar clojure.main -e '(println \"clojure-runtime-ok\" (+ 1 2 3))' | grep -qx 'clojure-runtime-ok 6'"
-    run_test pypy "availability probe" "if command -v pypy3 >/dev/null 2>&1; then pypy3 -c 'print(\"pypy-runtime-ok\")' | grep -qx pypy-runtime-ok; else ! apk search pypy | grep -E '(^|-)pypy3?(-|$)' && echo pypy-unavailable-alpine-aarch64; fi"
-    run_test swift "availability probe" "if command -v swift >/dev/null 2>&1; then swift --version; elif command -v swiftc >/dev/null 2>&1; then swiftc --version; else ! apk search swift | grep -E '(^|-)swift(c)?(-|$)' && echo swift-unavailable-alpine-aarch64; fi"
+    run_test pypy "availability probe" "if command -v pypy3 >/dev/null 2>&1; then pypy3 -c 'print(\"pypy-runtime-ok\")' | grep -qx pypy-runtime-ok; elif command -v apk >/dev/null 2>&1; then ! apk search pypy | grep -E '(^|-)pypy3?(-|$)' && echo pypy-unavailable-alpine-aarch64; elif command -v apt-cache >/dev/null 2>&1; then ! apt-cache search '^pypy3?$' | grep -E '(^|-)pypy3?(-|$)' && echo pypy-unavailable-debian-arm64; else echo pypy-unavailable; fi"
+    run_test swift "availability probe" "if command -v swift >/dev/null 2>&1; then swift --version; elif command -v swiftc >/dev/null 2>&1; then swiftc --version; elif command -v apk >/dev/null 2>&1; then ! apk search swift | grep -E '(^|-)swift(c)?(-|$)' && echo swift-unavailable-alpine-aarch64; elif command -v apt-cache >/dev/null 2>&1; then ! apt-cache search '^swift(c)?$' | grep -E '(^|-)swift(c)?(-|$)' && echo swift-unavailable-debian-arm64; else echo swift-unavailable; fi"
+    run_test csharpaot "availability/build-run probe" "if command -v csharpaot >/dev/null 2>&1; then tmp=\$(mktemp -d); cd \"\$tmp\" && printf '%s\n' 'using System;' 'Console.WriteLine(\"csharpaot-runtime-ok\");' > Program.cs && csharpaot Program.cs -o app && ./app | grep -qx csharpaot-runtime-ok; elif command -v dotnet >/dev/null 2>&1 && [ \"\${ISH_ARM64_DOTNET_AOT_PUBLISH:-0}\" != 0 ]; then export DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1; tmp=\$(mktemp -d); cd \"\$tmp\" && sdk_version=\$(dotnet --list-sdks | awk '{print \$1}' | sort -V | tail -1) && major=\${sdk_version%%.*} && test -n \"\$major\" && tfm=net\${major}.0 && printf '%s\n' '<Project Sdk=\"Microsoft.NET.Sdk\">' '  <PropertyGroup>' '    <OutputType>Exe</OutputType>' \"    <TargetFramework>\$tfm</TargetFramework>\" '    <PublishAot>true</PublishAot>' '    <InvariantGlobalization>true</InvariantGlobalization>' '  </PropertyGroup>' '</Project>' > app.csproj && printf '%s\n' 'Console.WriteLine(\"csharpaot-runtime-ok\");' > Program.cs && dotnet publish app.csproj -m:1 -nr:false -c Release -r linux-arm64 --self-contained true -p:PublishAot=true -p:RestoreIgnoreFailedSources=true >/dev/null && ./bin/Release/\$tfm/linux-arm64/publish/app | grep -qx csharpaot-runtime-ok; elif command -v dotnet >/dev/null 2>&1; then dotnet --list-sdks | grep -Eq '^(9|10|[1-9][0-9])\.' && echo dotnet-aot-sdk-installed-publish-opt-in; elif command -v apk >/dev/null 2>&1; then apk search 'dotnet*-sdk-aot' | grep -q '^dotnet[0-9][0-9]*-sdk-aot-' && echo csharpaot-package-available-uninstalled; elif command -v apt-cache >/dev/null 2>&1; then apt-cache search 'dotnet.*aot\|nativeaot\|csharpaot' | grep -qi 'dotnet\|aot\|csharpaot' && echo csharpaot-package-available-uninstalled; else echo csharpaot-unavailable; fi"
 
-    ensure_tools rust:rustc cargo
+    ensure_tools 'rust|rustc:rustc' cargo
     prepare_rust_fixture
     run_test rust "rustc version" "rustc --version"
     run_test rust "rustc compile + run" "cd '$GUEST_WORK/rust' && rustc hello.rs -o rustc_app && ./rustc_app | grep -qx 'rustc-runtime-ok 5050 10100'"
@@ -880,7 +2874,7 @@ main() {
     run_test rust "cargo run" "cd '$GUEST_WORK/rust' && cargo run --quiet | grep -q '^rust-runtime-ok 9534429477999140727 500500 rust-channel-ok rust-file-ok pong rust-child-ok$'"
     run_test rust "cargo test" "cd '$GUEST_WORK/rust' && RUST_TEST_THREADS=1 cargo test --quiet --jobs 1"
 
-    ensure_tools erlang:erl
+    ensure_tools 'erlang|erlang-base:erl'
     prepare_erlang_fixture
     run_test erlang "erl version" "erl -version 2>&1 | grep -q 'BEAM.*emulator version'"
 
@@ -889,6 +2883,21 @@ main() {
     run_test zig "zig version" "zig version"
     run_test zig "zig build-obj" "cd '$GUEST_WORK/zig' && zig build-obj main.zig -O Debug -femit-bin=zig_runtime.o && test -s zig_runtime.o"
     run_test zig "zig object link + run" "cd '$GUEST_WORK/zig' && zig build-obj main.zig -O Debug -femit-bin=zig_runtime.o && gcc harness.c zig_runtime.o -o zig_app && ./zig_app | grep -q '^zig-runtime-ok '"
+
+}
+
+main() {
+    [ -x "$ISH_BIN" ] || { echo "missing ish binary: $ISH_BIN" >&2; exit 1; }
+
+    local spec lane rootfs_path
+    for spec in $ROOTFS_LANES; do
+        lane="${spec%%=*}"
+        rootfs_path="${spec#*=}"
+        if [ "$lane" = "$spec" ]; then
+            lane="$(basename "$rootfs_path")"
+        fi
+        run_lane "$lane" "$rootfs_path"
+    done
 
     write_report
     echo "report: $REPORT"

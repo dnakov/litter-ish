@@ -555,7 +555,13 @@
     ubfx x9, x22, #8, #5
     lsr x10, x22, #16
     add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq fused_ldr32_cbz_sp_base
     ldr x12, [x11, x9, lsl #3]
+    b fused_ldr32_cbz_have_base
+fused_ldr32_cbz_sp_base:
+    ldr x12, [_cpu, #CPU_sp]
+fused_ldr32_cbz_have_base:
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
@@ -631,7 +637,13 @@
     ubfx x9, x22, #8, #5
     lsr x10, x22, #16
     add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq fused_ldr32_cbnz_sp_base
     ldr x12, [x11, x9, lsl #3]
+    b fused_ldr32_cbnz_have_base
+fused_ldr32_cbnz_sp_base:
+    ldr x12, [_cpu, #CPU_sp]
+fused_ldr32_cbnz_have_base:
     add _addr, x12, x10
     and _addr, _addr, #0xffffffffffff
     mov x24, _addr
@@ -1824,6 +1836,1116 @@ atomic_casp_segfault:
     mov _addr, x24
     gret
     read_bullshit 64, fused_adrp_ldr64_1
+
+/*
+ * Fused ADD/SUB (immediate, 64-bit, no flags) + LDR Xt, [Xd, #imm]
+ * Code stream: [gadget addr]
+ *              [rd | add_rn<<8 | add_imm12<<16 | op<<28 | ldr_rt<<32 | ldr_imm12<<40]
+ *              [ldr_guest_pc]
+ * Stores the ADD/SUB result before the load, matching architectural ordering
+ * if the load faults. The LDR guest PC is written to LOCAL_jit_saved_pc before
+ * the faultable memory access so guest signals report the precise LDR PC.
+ */
+.gadget fused_addsub_ldr64_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC for fault recovery
+    add _pc, _pc, #16
+
+    and x9, x22, #0x1f          // rd = ADD/SUB destination and LDR base
+    ubfx x10, x22, #8, #5       // add/sub rn
+    ubfx x11, x22, #16, #12     // add/sub imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x10, lsl #3]
+    tbnz x22, #28, fused_addsub_ldr64_sub
+    add x16, x15, x11
+    b fused_addsub_ldr64_store_base
+fused_addsub_ldr64_sub:
+    sub x16, x15, x11
+fused_addsub_ldr64_store_base:
+    str x16, [x14, x9, lsl #3]  // ADD/SUB side effect is visible before LDR
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x10, x22, #40, #12     // LDR imm12, scaled by 8
+    lsl x10, x10, #3
+    add _addr, x16, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 64, fused_addsub_ldr64_imm_1
+    ldr _tmp, [_addr]
+
+    ubfx x8, x22, #32, #5       // ldr_rt
+    add x11, _cpu, #CPU_x0
+    str _tmp, [x11, x8, lsl #3]
+    mov _addr, x24
+    gret
+    read_bullshit 64, fused_addsub_ldr64_imm_1
+
+/*
+ * Fused ADD/SUB (immediate, 64-bit, no flags) + LDR Wt, [Xd, #imm]
+ * Code stream: [gadget addr]
+ *              [rd | add_rn<<8 | add_imm12<<16 | op<<28 | ldr_rt<<32 | ldr_imm12<<40]
+ *              [ldr_guest_pc]
+ * Stores the ADD/SUB result before the load, matching architectural ordering
+ * if the load faults. The LDR guest PC is written to LOCAL_jit_saved_pc before
+ * the faultable memory access so guest signals report the precise LDR PC. The
+ * 32-bit load result is zero-extended into the architectural X register.
+ */
+.gadget fused_addsub_ldr32_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC for fault recovery
+    add _pc, _pc, #16
+
+    and x9, x22, #0x1f          // rd = ADD/SUB destination and LDR base
+    ubfx x10, x22, #8, #5       // add/sub rn
+    ubfx x11, x22, #16, #12     // add/sub imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x10, lsl #3]
+    tbnz x22, #28, fused_addsub_ldr32_sub
+    add x16, x15, x11
+    b fused_addsub_ldr32_store_base
+fused_addsub_ldr32_sub:
+    sub x16, x15, x11
+fused_addsub_ldr32_store_base:
+    str x16, [x14, x9, lsl #3]  // ADD/SUB side effect is visible before LDR
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x10, x22, #40, #12     // LDR imm12, scaled by 4
+    lsl x10, x10, #2
+    add _addr, x16, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 32, fused_addsub_ldr32_imm_1
+    ldr w0, [_addr]
+
+    ubfx x8, x22, #32, #5       // ldr_rt
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]   // zero-extended 32→64
+    mov _addr, x24
+    gret
+    read_bullshit 32, fused_addsub_ldr32_imm_1
+
+/*
+ * Fused ADD/SUB (immediate, 64-bit, no flags) + LDRH Wt, [Xd, #imm]
+ * Code stream: [gadget addr]
+ *              [rd | add_rn<<8 | add_imm12<<16 | op<<28 | ldr_rt<<32 | ldr_imm12<<40]
+ *              [ldr_guest_pc]
+ * Stores the ADD/SUB result before the load, matching architectural ordering
+ * if the load faults. The LDR guest PC is written to LOCAL_jit_saved_pc before
+ * the faultable memory access so guest signals report the precise LDR PC. The
+ * 16-bit load result is zero-extended into the architectural X register.
+ */
+.gadget fused_addsub_ldr16_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC for fault recovery
+    add _pc, _pc, #16
+
+    and x9, x22, #0x1f          // rd = ADD/SUB destination and LDR base
+    ubfx x10, x22, #8, #5       // add/sub rn
+    ubfx x11, x22, #16, #12     // add/sub imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x10, lsl #3]
+    tbnz x22, #28, fused_addsub_ldr16_sub
+    add x16, x15, x11
+    b fused_addsub_ldr16_store_base
+fused_addsub_ldr16_sub:
+    sub x16, x15, x11
+fused_addsub_ldr16_store_base:
+    str x16, [x14, x9, lsl #3]  // ADD/SUB side effect is visible before LDR
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x10, x22, #40, #12     // LDRH imm12, scaled by 2
+    lsl x10, x10, #1
+    add _addr, x16, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 16, fused_addsub_ldr16_imm_1
+    ldrh w0, [_addr]
+
+    ubfx x8, x22, #32, #5       // ldr_rt
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]   // zero-extended 16→64
+    mov _addr, x24
+    gret
+    read_bullshit 16, fused_addsub_ldr16_imm_1
+
+/*
+ * Fused ADD/SUB (immediate, 64-bit, no flags) + LDRB Wt, [Xd, #imm]
+ * Code stream: [gadget addr]
+ *              [rd | add_rn<<8 | add_imm12<<16 | op<<28 | ldr_rt<<32 | ldr_imm12<<40]
+ *              [ldr_guest_pc]
+ * Stores the ADD/SUB result before the load, matching architectural ordering
+ * if the load faults. The LDR guest PC is written to LOCAL_jit_saved_pc before
+ * the faultable memory access so guest signals report the precise LDR PC. The
+ * 8-bit load result is zero-extended into the architectural X register.
+ */
+.gadget fused_addsub_ldr8_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC for fault recovery
+    add _pc, _pc, #16
+
+    and x9, x22, #0x1f          // rd = ADD/SUB destination and LDR base
+    ubfx x10, x22, #8, #5       // add/sub rn
+    ubfx x11, x22, #16, #12     // add/sub imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x10, lsl #3]
+    tbnz x22, #28, fused_addsub_ldr8_sub
+    add x16, x15, x11
+    b fused_addsub_ldr8_store_base
+fused_addsub_ldr8_sub:
+    sub x16, x15, x11
+fused_addsub_ldr8_store_base:
+    str x16, [x14, x9, lsl #3]  // ADD/SUB side effect is visible before LDR
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x10, x22, #40, #12     // LDRB imm12, scaled by 1
+    add _addr, x16, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 8, fused_addsub_ldr8_imm_1
+    ldrb w0, [_addr]
+
+    ubfx x8, x22, #32, #5       // ldr_rt
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]   // zero-extended 8→64
+    mov _addr, x24
+    gret
+    read_bullshit 8, fused_addsub_ldr8_imm_1
+
+/*
+ * Fused ADD/SUB (immediate, 64-bit, no flags) + STR Xt, [Xd, #imm]
+ * Code stream: [gadget addr]
+ *              [rd | add_rn<<8 | add_imm12<<16 | op<<28 | str_rt<<32 | str_imm12<<40]
+ *              [str_guest_pc]
+ * Stores the ADD/SUB result before the store, matching architectural ordering
+ * if the store faults. The STR guest PC is written to LOCAL_jit_saved_pc before
+ * the faultable memory access so guest signals report the precise STR PC.
+ */
+.gadget fused_addsub_str64_imm
+    ldr x22, [_pc]
+    ldr x25, [_pc, #8]          // precise STR guest PC for fault recovery
+    add _pc, _pc, #16
+
+    and x9, x22, #0x1f          // rd = ADD/SUB destination and STR base
+    ubfx x10, x22, #8, #5       // add/sub rn
+    ubfx x11, x22, #16, #12     // add/sub imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x10, lsl #3]
+    tbnz x22, #28, fused_addsub_str64_sub
+    add x16, x15, x11
+    b fused_addsub_str64_store_base
+fused_addsub_str64_sub:
+    sub x16, x15, x11
+fused_addsub_str64_store_base:
+    str x16, [x14, x9, lsl #3]  // ADD/SUB side effect is visible before STR
+
+    str x25, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x8, x22, #32, #5       // str_rt
+    ldr x23, [x14, x8, lsl #3]  // store value after ADD/SUB, so rt==rd is correct
+    ubfx x10, x22, #40, #12     // STR imm12, scaled by 8
+    lsl x10, x10, #3
+    add _addr, x16, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    write_prep 64, fused_addsub_str64_imm_1
+    str x23, [_addr]
+    write_done 64, fused_addsub_str64_imm_1
+    mov _addr, x24
+    gret
+    write_bullshit 64, fused_addsub_str64_imm_1
+
+/*
+ * Fused ADD/SUB (immediate, 64-bit, no flags) + STR Wt, [Xd, #imm]
+ * Code stream: [gadget addr]
+ *              [rd | add_rn<<8 | add_imm12<<16 | op<<28 | str_rt<<32 | str_imm12<<40]
+ *              [str_guest_pc]
+ * Stores the ADD/SUB result before the store, matching architectural ordering
+ * if the store faults. The STR guest PC is written to LOCAL_jit_saved_pc before
+ * the faultable memory access so guest signals report the precise STR PC. The
+ * store source is read after the ADD/SUB side effect so rt==rd is correct.
+ */
+.gadget fused_addsub_str32_imm
+    ldr x22, [_pc]
+    ldr x25, [_pc, #8]          // precise STR guest PC for fault recovery
+    add _pc, _pc, #16
+
+    and x9, x22, #0x1f          // rd = ADD/SUB destination and STR base
+    ubfx x10, x22, #8, #5       // add/sub rn
+    ubfx x11, x22, #16, #12     // add/sub imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x10, lsl #3]
+    tbnz x22, #28, fused_addsub_str32_sub
+    add x16, x15, x11
+    b fused_addsub_str32_store_base
+fused_addsub_str32_sub:
+    sub x16, x15, x11
+fused_addsub_str32_store_base:
+    str x16, [x14, x9, lsl #3]  // ADD/SUB side effect is visible before STR
+
+    str x25, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x8, x22, #32, #5       // str_rt
+    ldr x23, [x14, x8, lsl #3]  // store value after ADD/SUB, so rt==rd is correct
+    ubfx x10, x22, #40, #12     // STR imm12, scaled by 4
+    lsl x10, x10, #2
+    add _addr, x16, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    write_prep 32, fused_addsub_str32_imm_1
+    str w23, [_addr]
+    write_done 32, fused_addsub_str32_imm_1
+    mov _addr, x24
+    gret
+    write_bullshit 32, fused_addsub_str32_imm_1
+
+/*
+ * Fused ADD/SUB (immediate, 64-bit, no flags) + STRH Wt, [Xd, #imm]
+ * Code stream: [gadget addr]
+ *              [rd | add_rn<<8 | add_imm12<<16 | op<<28 | str_rt<<32 | str_imm12<<40]
+ *              [str_guest_pc]
+ * Stores the ADD/SUB result before the store, matching architectural ordering
+ * if the store faults. The STR guest PC is written to LOCAL_jit_saved_pc before
+ * the faultable memory access so guest signals report the precise STR PC. The
+ * store source is read after the ADD/SUB side effect so rt==rd is correct.
+ */
+.gadget fused_addsub_str16_imm
+    ldr x22, [_pc]
+    ldr x25, [_pc, #8]          // precise STR guest PC for fault recovery
+    add _pc, _pc, #16
+
+    and x9, x22, #0x1f          // rd = ADD/SUB destination and STR base
+    ubfx x10, x22, #8, #5       // add/sub rn
+    ubfx x11, x22, #16, #12     // add/sub imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x10, lsl #3]
+    tbnz x22, #28, fused_addsub_str16_sub
+    add x16, x15, x11
+    b fused_addsub_str16_store_base
+fused_addsub_str16_sub:
+    sub x16, x15, x11
+fused_addsub_str16_store_base:
+    str x16, [x14, x9, lsl #3]  // ADD/SUB side effect is visible before STR
+
+    str x25, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x8, x22, #32, #5       // str_rt
+    ldr x23, [x14, x8, lsl #3]  // store value after ADD/SUB, so rt==rd is correct
+    ubfx x10, x22, #40, #12     // STRH imm12, scaled by 2
+    lsl x10, x10, #1
+    add _addr, x16, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    write_prep 16, fused_addsub_str16_imm_1
+    strh w23, [_addr]
+    write_done 16, fused_addsub_str16_imm_1
+    mov _addr, x24
+    gret
+    write_bullshit 16, fused_addsub_str16_imm_1
+
+/*
+ * Fused ADD/SUB (immediate, 64-bit, no flags) + STRB Wt, [Xd, #imm]
+ * Code stream: [gadget addr]
+ *              [rd | add_rn<<8 | add_imm12<<16 | op<<28 | str_rt<<32 | str_imm12<<40]
+ *              [str_guest_pc]
+ * Stores the ADD/SUB result before the store, matching architectural ordering
+ * if the store faults. The STR guest PC is written to LOCAL_jit_saved_pc before
+ * the faultable memory access so guest signals report the precise STR PC. The
+ * store source is read after the ADD/SUB side effect so rt==rd is correct.
+ */
+.gadget fused_addsub_str8_imm
+    ldr x22, [_pc]
+    ldr x25, [_pc, #8]          // precise STR guest PC for fault recovery
+    add _pc, _pc, #16
+
+    and x9, x22, #0x1f          // rd = ADD/SUB destination and STR base
+    ubfx x10, x22, #8, #5       // add/sub rn
+    ubfx x11, x22, #16, #12     // add/sub imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x10, lsl #3]
+    tbnz x22, #28, fused_addsub_str8_sub
+    add x16, x15, x11
+    b fused_addsub_str8_store_base
+fused_addsub_str8_sub:
+    sub x16, x15, x11
+fused_addsub_str8_store_base:
+    str x16, [x14, x9, lsl #3]  // ADD/SUB side effect is visible before STR
+
+    str x25, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x8, x22, #32, #5       // str_rt
+    ldr x23, [x14, x8, lsl #3]  // store value after ADD/SUB, so rt==rd is correct
+    ubfx x10, x22, #40, #12     // STRB imm12, scaled by 1
+    add _addr, x16, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    write_prep 8, fused_addsub_str8_imm_1
+    strb w23, [_addr]
+    write_done 8, fused_addsub_str8_imm_1
+    mov _addr, x24
+    gret
+    write_bullshit 8, fused_addsub_str8_imm_1
+
+/*
+ * Fused LDR Xt, [Xn, #imm] + CBZ/CBNZ Xt.
+ * Code stream: [gadget addr][rt | rn<<8 | ldr_imm12<<16][ldr_guest_pc][target][fallthrough]
+ * The loaded register is stored before branching. LOCAL_jit_saved_pc is set to
+ * the LDR PC before the faultable access so guest signals report the load.
+ */
+.gadget fused_ldr64_cbz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC
+    ldr x25, [_pc, #16]         // target (fake_ip or chained)
+    ldr x26, [_pc, #24]         // fallthrough (fake_ip or chained)
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5        // rn
+    ubfx x10, x22, #16, #12     // imm12, scaled by 8
+    lsl x10, x10, #3
+    add x11, _cpu, #CPU_x0
+    ldr x12, [x11, x9, lsl #3]
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 64, fused_ldr64_cbz_imm_1
+    ldr _tmp, [_addr]
+
+    and x8, x22, #0x1f          // rt
+    add x11, _cpu, #CPU_x0
+    str _tmp, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbz _tmp, fused_ldr64_cbz_taken
+fused_ldr64_cbz_not_taken:
+    tbnz x26, #63, fused_ldr64_cbz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr64_cbz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr64_cbz_taken:
+    tbnz x25, #63, fused_ldr64_cbz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr64_cbz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 64, fused_ldr64_cbz_imm_1
+
+.gadget fused_ldr64_cbnz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    ldr x25, [_pc, #16]
+    ldr x26, [_pc, #24]
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5
+    ubfx x10, x22, #16, #12
+    lsl x10, x10, #3
+    add x11, _cpu, #CPU_x0
+    ldr x12, [x11, x9, lsl #3]
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 64, fused_ldr64_cbnz_imm_1
+    ldr _tmp, [_addr]
+
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str _tmp, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbnz _tmp, fused_ldr64_cbnz_taken
+fused_ldr64_cbnz_not_taken:
+    tbnz x26, #63, fused_ldr64_cbnz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr64_cbnz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr64_cbnz_taken:
+    tbnz x25, #63, fused_ldr64_cbnz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr64_cbnz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 64, fused_ldr64_cbnz_imm_1
+
+/*
+ * Fused LDR Xt, [SP, #imm] + CBZ/CBNZ Xt.
+ * Code stream: [gadget addr][rt | ldr_imm12<<16][ldr_guest_pc][target][fallthrough]
+ * This is the SP-base counterpart to the non-SP LDR64+CBZ/CBNZ fusion. The
+ * loaded register is stored before branching. LOCAL_jit_saved_pc is set to the
+ * LDR PC before the faultable access so guest signals report the load.
+ */
+.gadget fused_ldr64_sp_cbz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC
+    ldr x25, [_pc, #16]         // target (fake_ip or chained)
+    ldr x26, [_pc, #24]         // fallthrough (fake_ip or chained)
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x10, x22, #16, #12     // imm12, scaled by 8
+    lsl x10, x10, #3
+    ldr x12, [_cpu, #CPU_sp]
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 64, fused_ldr64_sp_cbz_imm_1
+    ldr _tmp, [_addr]
+
+    and x8, x22, #0x1f          // rt, guaranteed != 31
+    add x11, _cpu, #CPU_x0
+    str _tmp, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbz _tmp, fused_ldr64_sp_cbz_taken
+fused_ldr64_sp_cbz_not_taken:
+    tbnz x26, #63, fused_ldr64_sp_cbz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr64_sp_cbz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr64_sp_cbz_taken:
+    tbnz x25, #63, fused_ldr64_sp_cbz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr64_sp_cbz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 64, fused_ldr64_sp_cbz_imm_1
+
+.gadget fused_ldr64_sp_cbnz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    ldr x25, [_pc, #16]
+    ldr x26, [_pc, #24]
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x10, x22, #16, #12
+    lsl x10, x10, #3
+    ldr x12, [_cpu, #CPU_sp]
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 64, fused_ldr64_sp_cbnz_imm_1
+    ldr _tmp, [_addr]
+
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str _tmp, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbnz _tmp, fused_ldr64_sp_cbnz_taken
+fused_ldr64_sp_cbnz_not_taken:
+    tbnz x26, #63, fused_ldr64_sp_cbnz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr64_sp_cbnz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr64_sp_cbnz_taken:
+    tbnz x25, #63, fused_ldr64_sp_cbnz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr64_sp_cbnz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 64, fused_ldr64_sp_cbnz_imm_1
+
+/*
+ * Fused LDR Wt, [Xn, #imm] + CBZ/CBNZ Wt.
+ * Code stream: [gadget addr][rt | rn<<8 | ldr_imm12<<16][ldr_guest_pc][target][fallthrough]
+ * The loaded register is zero-extended and stored before branching.
+ * LOCAL_jit_saved_pc is set to the LDR PC before the faultable access so guest
+ * signals report the load.
+ */
+.gadget fused_ldr32_cbz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC
+    ldr x25, [_pc, #16]         // target (fake_ip or chained)
+    ldr x26, [_pc, #24]         // fallthrough (fake_ip or chained)
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5        // rn
+    ubfx x10, x22, #16, #12     // imm12, scaled by 4
+    lsl x10, x10, #2
+    add x11, _cpu, #CPU_x0
+    ldr x12, [x11, x9, lsl #3]
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 32, fused_ldr32_cbz_imm_1
+    ldr w0, [_addr]
+
+    and x8, x22, #0x1f          // rt
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbz x0, fused_ldr32_cbz_taken
+fused_ldr32_cbz_not_taken:
+    tbnz x26, #63, fused_ldr32_cbz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr32_cbz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr32_cbz_taken:
+    tbnz x25, #63, fused_ldr32_cbz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr32_cbz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 32, fused_ldr32_cbz_imm_1
+
+.gadget fused_ldr32_cbnz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    ldr x25, [_pc, #16]
+    ldr x26, [_pc, #24]
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5
+    ubfx x10, x22, #16, #12
+    lsl x10, x10, #2
+    add x11, _cpu, #CPU_x0
+    ldr x12, [x11, x9, lsl #3]
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 32, fused_ldr32_cbnz_imm_1
+    ldr w0, [_addr]
+
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbnz x0, fused_ldr32_cbnz_taken
+fused_ldr32_cbnz_not_taken:
+    tbnz x26, #63, fused_ldr32_cbnz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr32_cbnz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr32_cbnz_taken:
+    tbnz x25, #63, fused_ldr32_cbnz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr32_cbnz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 32, fused_ldr32_cbnz_imm_1
+
+/*
+ * Fused LDRSW Xt, [Xn/SP, #imm] + CBZ/CBNZ Xt.
+ * Code stream: [gadget addr][rt | rn<<8 | ldr_imm12<<16][ldr_guest_pc][target][fallthrough]
+ * The loaded register is sign-extended to 64 bits and stored before branching.
+ * LOCAL_jit_saved_pc is set to the LDRSW PC before the faultable access so
+ * guest signals report the load.
+ */
+.gadget fused_ldr32_sx_cbz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDRSW guest PC
+    ldr x25, [_pc, #16]         // target (fake_ip or chained)
+    ldr x26, [_pc, #24]         // fallthrough (fake_ip or chained)
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5        // rn, 31 means SP
+    ubfx x10, x22, #16, #12     // imm12, scaled by 4
+    lsl x10, x10, #2
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq fused_ldr32_sx_cbz_sp_base
+    ldr x12, [x11, x9, lsl #3]
+    b fused_ldr32_sx_cbz_have_base
+fused_ldr32_sx_cbz_sp_base:
+    ldr x12, [_cpu, #CPU_sp]
+fused_ldr32_sx_cbz_have_base:
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 32, fused_ldr32_sx_cbz_imm_1
+    ldrsw _tmp, [_addr]
+
+    and x8, x22, #0x1f          // rt, guaranteed != 31
+    add x11, _cpu, #CPU_x0
+    str _tmp, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbz _tmp, fused_ldr32_sx_cbz_taken
+fused_ldr32_sx_cbz_not_taken:
+    tbnz x26, #63, fused_ldr32_sx_cbz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr32_sx_cbz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr32_sx_cbz_taken:
+    tbnz x25, #63, fused_ldr32_sx_cbz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr32_sx_cbz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 32, fused_ldr32_sx_cbz_imm_1
+
+.gadget fused_ldr32_sx_cbnz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    ldr x25, [_pc, #16]
+    ldr x26, [_pc, #24]
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5
+    ubfx x10, x22, #16, #12
+    lsl x10, x10, #2
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq fused_ldr32_sx_cbnz_sp_base
+    ldr x12, [x11, x9, lsl #3]
+    b fused_ldr32_sx_cbnz_have_base
+fused_ldr32_sx_cbnz_sp_base:
+    ldr x12, [_cpu, #CPU_sp]
+fused_ldr32_sx_cbnz_have_base:
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 32, fused_ldr32_sx_cbnz_imm_1
+    ldrsw _tmp, [_addr]
+
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str _tmp, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbnz _tmp, fused_ldr32_sx_cbnz_taken
+fused_ldr32_sx_cbnz_not_taken:
+    tbnz x26, #63, fused_ldr32_sx_cbnz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr32_sx_cbnz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr32_sx_cbnz_taken:
+    tbnz x25, #63, fused_ldr32_sx_cbnz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr32_sx_cbnz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 32, fused_ldr32_sx_cbnz_imm_1
+
+/*
+ * Fused LDRSB/LDRSH Xt/Wt, [Xn/SP, #imm] + matching CBZ/CBNZ Xt/Wt.
+ * Code stream: [gadget addr]
+ *              [rt | rn<<8 | ldr_imm12<<16 | size<<28 | extend64<<29]
+ *              [ldr_guest_pc][target][fallthrough]
+ * size 0 = byte, size 1 = halfword. extend64 selects Xt vs Wt sign-extension
+ * and must match the branch width. LOCAL_jit_saved_pc is set to the load PC
+ * before the faultable access so guest signals report the load.
+ */
+.gadget fused_ldr_sx_cbz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDRSB/LDRSH guest PC
+    ldr x25, [_pc, #16]         // target (fake_ip or chained)
+    ldr x26, [_pc, #24]         // fallthrough (fake_ip or chained)
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5        // rn, 31 means SP
+    ubfx x10, x22, #16, #12     // imm12, scaled by size
+    tbz x22, #28, fused_ldr_sx_cbz_unscaled
+    lsl x10, x10, #1
+fused_ldr_sx_cbz_unscaled:
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq fused_ldr_sx_cbz_sp_base
+    ldr x12, [x11, x9, lsl #3]
+    b fused_ldr_sx_cbz_have_base
+fused_ldr_sx_cbz_sp_base:
+    ldr x12, [_cpu, #CPU_sp]
+fused_ldr_sx_cbz_have_base:
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    tbnz x22, #28, fused_ldr_sx_cbz_load16
+fused_ldr_sx_cbz_load8:
+    read_prep 8, fused_ldr_sx_cbz_imm_8
+    tbnz x22, #29, fused_ldr_sx_cbz_load8_64
+    ldrsb w0, [_addr]
+    b fused_ldr_sx_cbz_after_load
+fused_ldr_sx_cbz_load8_64:
+    ldrsb _tmp, [_addr]
+    b fused_ldr_sx_cbz_after_load
+fused_ldr_sx_cbz_load16:
+    read_prep 16, fused_ldr_sx_cbz_imm_16
+    tbnz x22, #29, fused_ldr_sx_cbz_load16_64
+    ldrsh w0, [_addr]
+    b fused_ldr_sx_cbz_after_load
+fused_ldr_sx_cbz_load16_64:
+    ldrsh _tmp, [_addr]
+
+fused_ldr_sx_cbz_after_load:
+    and x8, x22, #0x1f          // rt, guaranteed != 31
+    add x11, _cpu, #CPU_x0
+    str _tmp, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbz _tmp, fused_ldr_sx_cbz_taken
+fused_ldr_sx_cbz_not_taken:
+    tbnz x26, #63, fused_ldr_sx_cbz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr_sx_cbz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr_sx_cbz_taken:
+    tbnz x25, #63, fused_ldr_sx_cbz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr_sx_cbz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 8, fused_ldr_sx_cbz_imm_8
+    read_bullshit 16, fused_ldr_sx_cbz_imm_16
+
+.gadget fused_ldr_sx_cbnz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    ldr x25, [_pc, #16]
+    ldr x26, [_pc, #24]
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5
+    ubfx x10, x22, #16, #12
+    tbz x22, #28, fused_ldr_sx_cbnz_unscaled
+    lsl x10, x10, #1
+fused_ldr_sx_cbnz_unscaled:
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq fused_ldr_sx_cbnz_sp_base
+    ldr x12, [x11, x9, lsl #3]
+    b fused_ldr_sx_cbnz_have_base
+fused_ldr_sx_cbnz_sp_base:
+    ldr x12, [_cpu, #CPU_sp]
+fused_ldr_sx_cbnz_have_base:
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    tbnz x22, #28, fused_ldr_sx_cbnz_load16
+fused_ldr_sx_cbnz_load8:
+    read_prep 8, fused_ldr_sx_cbnz_imm_8
+    tbnz x22, #29, fused_ldr_sx_cbnz_load8_64
+    ldrsb w0, [_addr]
+    b fused_ldr_sx_cbnz_after_load
+fused_ldr_sx_cbnz_load8_64:
+    ldrsb _tmp, [_addr]
+    b fused_ldr_sx_cbnz_after_load
+fused_ldr_sx_cbnz_load16:
+    read_prep 16, fused_ldr_sx_cbnz_imm_16
+    tbnz x22, #29, fused_ldr_sx_cbnz_load16_64
+    ldrsh w0, [_addr]
+    b fused_ldr_sx_cbnz_after_load
+fused_ldr_sx_cbnz_load16_64:
+    ldrsh _tmp, [_addr]
+
+fused_ldr_sx_cbnz_after_load:
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str _tmp, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbnz _tmp, fused_ldr_sx_cbnz_taken
+fused_ldr_sx_cbnz_not_taken:
+    tbnz x26, #63, fused_ldr_sx_cbnz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr_sx_cbnz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr_sx_cbnz_taken:
+    tbnz x25, #63, fused_ldr_sx_cbnz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr_sx_cbnz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 8, fused_ldr_sx_cbnz_imm_8
+    read_bullshit 16, fused_ldr_sx_cbnz_imm_16
+
+/*
+ * Fused LDRH Wt, [Xn, #imm] + CBZ/CBNZ Wt.
+ * Code stream: [gadget addr][rt | rn<<8 | ldr_imm12<<16][ldr_guest_pc][target][fallthrough]
+ * The loaded register is zero-extended and stored before branching.
+ * LOCAL_jit_saved_pc is set to the LDRH PC before the faultable access so
+ * guest signals report the load.
+ */
+.gadget fused_ldr16_cbz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC
+    ldr x25, [_pc, #16]         // target (fake_ip or chained)
+    ldr x26, [_pc, #24]         // fallthrough (fake_ip or chained)
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5        // rn
+    ubfx x10, x22, #16, #12     // imm12, scaled by 2
+    lsl x10, x10, #1
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq fused_ldr16_cbz_sp_base
+    ldr x12, [x11, x9, lsl #3]
+    b fused_ldr16_cbz_have_base
+fused_ldr16_cbz_sp_base:
+    ldr x12, [_cpu, #CPU_sp]
+fused_ldr16_cbz_have_base:
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 16, fused_ldr16_cbz_imm_1
+    ldrh w0, [_addr]
+
+    and x8, x22, #0x1f          // rt
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbz x0, fused_ldr16_cbz_taken
+fused_ldr16_cbz_not_taken:
+    tbnz x26, #63, fused_ldr16_cbz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr16_cbz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr16_cbz_taken:
+    tbnz x25, #63, fused_ldr16_cbz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr16_cbz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 16, fused_ldr16_cbz_imm_1
+
+.gadget fused_ldr16_cbnz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    ldr x25, [_pc, #16]
+    ldr x26, [_pc, #24]
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5
+    ubfx x10, x22, #16, #12
+    lsl x10, x10, #1
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq fused_ldr16_cbnz_sp_base
+    ldr x12, [x11, x9, lsl #3]
+    b fused_ldr16_cbnz_have_base
+fused_ldr16_cbnz_sp_base:
+    ldr x12, [_cpu, #CPU_sp]
+fused_ldr16_cbnz_have_base:
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 16, fused_ldr16_cbnz_imm_1
+    ldrh w0, [_addr]
+
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbnz x0, fused_ldr16_cbnz_taken
+fused_ldr16_cbnz_not_taken:
+    tbnz x26, #63, fused_ldr16_cbnz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr16_cbnz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr16_cbnz_taken:
+    tbnz x25, #63, fused_ldr16_cbnz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr16_cbnz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 16, fused_ldr16_cbnz_imm_1
+
+/*
+ * Fused LDRB Wt, [Xn, #imm] + CBZ/CBNZ Wt.
+ * Code stream: [gadget addr][rt | rn<<8 | ldr_imm12<<16][ldr_guest_pc][target][fallthrough]
+ * The loaded register is zero-extended and stored before branching.
+ * LOCAL_jit_saved_pc is set to the LDRB PC before the faultable access so
+ * guest signals report the load.
+ */
+.gadget fused_ldr8_cbz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]          // precise LDR guest PC
+    ldr x25, [_pc, #16]         // target (fake_ip or chained)
+    ldr x26, [_pc, #24]         // fallthrough (fake_ip or chained)
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5        // rn
+    ubfx x10, x22, #16, #12     // imm12, scaled by 1
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq fused_ldr8_cbz_sp_base
+    ldr x12, [x11, x9, lsl #3]
+    b fused_ldr8_cbz_have_base
+fused_ldr8_cbz_sp_base:
+    ldr x12, [_cpu, #CPU_sp]
+fused_ldr8_cbz_have_base:
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 8, fused_ldr8_cbz_imm_1
+    ldrb w0, [_addr]
+
+    and x8, x22, #0x1f          // rt
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbz x0, fused_ldr8_cbz_taken
+fused_ldr8_cbz_not_taken:
+    tbnz x26, #63, fused_ldr8_cbz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr8_cbz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr8_cbz_taken:
+    tbnz x25, #63, fused_ldr8_cbz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr8_cbz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 8, fused_ldr8_cbz_imm_1
+
+.gadget fused_ldr8_cbnz_imm
+    ldr x22, [_pc]
+    ldr x23, [_pc, #8]
+    ldr x25, [_pc, #16]
+    ldr x26, [_pc, #24]
+    add _pc, _pc, #32
+
+    str x23, [_cpu, #LOCAL_jit_saved_pc]
+    ubfx x9, x22, #8, #5
+    ubfx x10, x22, #16, #12
+    add x11, _cpu, #CPU_x0
+    cmp x9, #31
+    b.eq fused_ldr8_cbnz_sp_base
+    ldr x12, [x11, x9, lsl #3]
+    b fused_ldr8_cbnz_have_base
+fused_ldr8_cbnz_sp_base:
+    ldr x12, [_cpu, #CPU_sp]
+fused_ldr8_cbnz_have_base:
+    add _addr, x12, x10
+    and _addr, _addr, #0xffffffffffff
+    mov x24, _addr
+
+    read_prep 8, fused_ldr8_cbnz_imm_1
+    ldrb w0, [_addr]
+
+    and x8, x22, #0x1f
+    add x11, _cpu, #CPU_x0
+    str x0, [x11, x8, lsl #3]
+    mov _addr, x24
+    cbnz x0, fused_ldr8_cbnz_taken
+fused_ldr8_cbnz_not_taken:
+    tbnz x26, #63, fused_ldr8_cbnz_nt_unchained
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr8_cbnz_nt_unchained:
+    and x11, x26, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x26
+    b fiber_ret_chain
+fused_ldr8_cbnz_taken:
+    tbnz x25, #63, fused_ldr8_cbnz_t_unchained
+    mov _pc, x25
+    b fiber_ret_chain
+fused_ldr8_cbnz_t_unchained:
+    and x11, x25, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x25
+    b fiber_ret_chain
+    read_bullshit 8, fused_ldr8_cbnz_imm_1
 
 /*
  * Fused ADRP+ADD gadget

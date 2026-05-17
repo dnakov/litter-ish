@@ -128,7 +128,7 @@ syscall_t syscall_table[] = {
     [115] = (syscall_t) sys_clock_nanosleep,
     [116] = (syscall_t) sys_syslog,
     [117] = (syscall_t) sys_ptrace,
-    [118] = (syscall_t) syscall_stub, // sched_setparam
+    [118] = (syscall_t) sys_sched_setparam,
     [119] = (syscall_t) sys_sched_setscheduler,
     [120] = (syscall_t) sys_sched_getscheduler,
     [121] = (syscall_t) sys_sched_getparam,
@@ -297,6 +297,7 @@ syscall_t syscall_table[] = {
     [437] = (syscall_t) sys_openat2,
     [438] = (syscall_t) syscall_silent_stub, // pidfd_getfd
     [439] = (syscall_t) sys_faccessat2,
+    [452] = (syscall_t) sys_fchmodat2,
 };
 
 #define NUM_SYSCALLS (sizeof(syscall_table) / sizeof(syscall_table[0]))

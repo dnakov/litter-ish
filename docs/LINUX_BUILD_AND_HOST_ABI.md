@@ -5,6 +5,20 @@
 Make the ARM64 guest build usable on a Linux AArch64 host without scattering
 Darwin-only assumptions through the runtime.
 
+## Validation host
+
+| Component | Detail |
+|---|---|
+| Board | Orange Pi 6 Plus |
+| SoC | CIX P1 (CD8180/CD8160), ARMv8 AArch64 |
+| CPU topology | 12 cores: 4× Cortex-A520 up to 1.8 GHz, 8× Cortex-A720 up to 2.6 GHz |
+| RAM | 16 GB class; about 14 GiB visible to Linux |
+| Primary storage | AirDisk 512 GB NVMe; root on `/dev/nvme0n1p2`, swap on `/dev/nvme0n1p3` |
+| Network | Primary wired interface `enP1p49s0`; Wi-Fi device present as `wlP2p1s0` |
+| OS/kernel | Orange Pi 1.0.2 Trixie / Debian Trixie, Linux `6.6.89-cix`, `aarch64` |
+| Toolchain | Clang 19.1.7, Meson 1.7.0, Ninja 1.12.1, GNU Make 4.4.1 |
+| Workspace | `/workspace/projects/ish-arm64` |
+
 ## Current Linux build
 
 Verified on this host with:
@@ -140,7 +154,7 @@ Validation after the fix:
 
 - `make build-arm64-linux-all` passes.
 - 50 consecutive minimal Bun local `file:` install repro runs passed.
-- staged runtime coverage is now **49 / 49 passing** after subsequent syscall, signal, Java, barrier, Python/Lua/Clojure, Rust, Erlang, Zig, and runtime fixture additions.
+- staged runtime coverage is now **83 / 83 passing** after subsequent syscall, signal, Java, barrier, Python/Lua/Clojure, C# NativeAOT SDK availability, Rust, Erlang, Zig, and runtime fixture additions.
 
 
 ## JavaScriptCore GC compatibility shims
@@ -239,7 +253,7 @@ Linux `getdents64` exposes a `d_type` byte for each directory entry. The ARM64
 port previously returned `DT_UNKNOWN` for every entry even when the backing
 filesystem knew the type. That is legal but incomplete, and it breaks runtimes
 that use `d_type` as a fast path for recursive directory walks. Bun's
-`fs.cpSync(..., { recursive: true })` hit this during PiClaw workspace bootstrap:
+`fs.cpSync(..., { recursive: true })` hit this during a Bun workspace bootstrap:
 it treated subdirectories under `skel/.pi/skills` as ordinary copy targets and
 failed with:
 
@@ -255,8 +269,8 @@ Directory reads now propagate or infer Linux `DT_*` values:
 - fakefs inherits the realfs type while substituting its fake inode number.
 
 Validation: a minimal Bun recursive `fs.cpSync` directory tree copy succeeds,
-PiClaw no longer logs the bootstrap `ENOTSUP ... copyfile` warning, and staged
-runtime coverage remains **49 / 49 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260513-203532.md`).
+the workspace bootstrap no longer logs the `ENOTSUP ... copyfile` warning, and staged
+runtime coverage remains **83 / 83 passing** (`/workspace/tmp/ish-arm64-runtime-coverage-20260517-092759.md`), with the later `fchmodat2(AT_EMPTY_PATH)`, scheduler priority syscall, C# NativeAOT SDK-availability, high-address `MAP_NORESERVE` reservation-overlap probes, and Phase 4 default-off executor reconnaissance validation included in the staged gate.
 
 ## Blocking I/O and exit cleanup
 
@@ -272,10 +286,15 @@ shutdown. The realfs read/write path, the fast small-buffer read path, and socke
 poll waits now retry spurious host `EINTR`, but surface `_EINTR` when the guest
 has a pending unblocked signal or the thread group is exiting. Socket waits also
 use a short poll interval so helper threads blocked in `recv`/`recvmsg` can
-observe `exit_group` promptly. A follow-up socket audit bounds Unix socket
-backing paths, removes guest-sized socket-option VLAs, validates returned
-address lengths, copies only actual `recvfrom` byte counts back to the guest,
-and clears released Unix-socket name references after failed `bind()` calls.
+observe `exit_group` promptly. Follow-up socket audits bound Unix socket
+backing paths, remove guest-sized socket-option VLAs, validate returned address
+lengths, harden accept/name buffers, bound `sendmsg`/`recvmsg` iov/control-
+message allocation and cleanup, translate and validate ARM64 `cmsghdr` layout
+for `SCM_RIGHTS`, avoid SCM queue asserts on malformed/native ancillary data,
+copy only actual `recvfrom` byte counts back to the guest, accept oversized
+`recvfrom` source-address buffers by clamping to the internal sockaddr buffer
+(Linux compatibility required by c-ares/libcurl DNS), and clear released
+Unix-socket name references after failed `bind()` calls.
 
 `exit_group` now gives helper-heavy runtimes a longer bounded drain window before
 reporting stuck detached host threads. The staged Rust and Erlang version/codegen
@@ -312,6 +331,13 @@ The practical host-facing ABI is now:
 - `gadget_set_jit_saved_pc`
 - host signal recovery in `main.c`
 - TLB/cross-page fault exits in ARM64 memory gadgets
+
+### Executor diagnostics ABI
+
+- Linux/local env gates in `main.c` parse `ISH_ARM64_FUSION_STATS`, `ISH_ARM64_BLOCK_STATS`, and the dormant dry-run `ISH_ARM64_HOT_TRACE` flag.
+- `ISH_ARM64_BLOCK_STATS=1` emits block/chaining/hot-edge diagnostics at process exit.
+- `ISH_ARM64_HOT_TRACE=1` is only meaningful with block stats today; it enables candidate classification/table output for future trace design but does not build traces, add guarded exits, change invalidation epochs, or change generated gadget streams.
+- Diagnostic `ARM64_*_STATS` output is intentionally kept out of exact-output runtime coverage gates.
 
 ### Runtime compatibility shims
 

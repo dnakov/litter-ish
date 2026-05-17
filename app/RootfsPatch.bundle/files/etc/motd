@@ -1,0 +1,7 @@
+Welcome to ios-linuxkit.
+
+This root filesystem is based on Alpine Linux. The Alpine Wiki contains
+how-to guides and system administration notes:
+https://wiki.alpinelinux.org/
+
+You may change this message by editing /etc/motd.

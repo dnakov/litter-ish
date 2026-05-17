@@ -80,6 +80,10 @@ static addr_t do_mmap(addr_t addr, uint64_t len, dword_t prot, dword_t flags, fd
 #endif
         if (addr != 0 && !(flags & MMAP_FIXED) && !pt_is_hole(current->mem, page, pages))
             addr = 0;
+#ifdef GUEST_ARM64
+        if (addr != 0 && !(flags & MMAP_FIXED) && mem_range_has_reservation(current->mem, page, pages))
+            addr = 0;
+#endif
         if (addr != 0)
             caller_hint_used = true;
     }
@@ -106,15 +110,15 @@ static addr_t do_mmap(addr_t addr, uint64_t len, dword_t prot, dword_t flags, fd
         // so don't count them against the anonymous page limit.
         bool is_prot_none = !(prot & P_READ) && !(prot & P_WRITE) && !(prot & P_EXEC);
 #ifdef GUEST_ARM64
-        if ((flags & MMAP_NORESERVE) && pages > 0x10000) {
+        if ((flags & MMAP_NORESERVE) && pages >= 0x10000) {
             if (!caller_hint_used) {
                 pages_t align_pages = pages;
                 if (align_pages > 0x40000) align_pages = 0x40000;
                 page_t aligned = (page / align_pages) * align_pages;
-                if (aligned >= MMAP_HOLE_END && pt_is_hole(current->mem, aligned, pages))
+                if (aligned >= MMAP_HOLE_END && pt_is_hole(current->mem, aligned, pages) && !mem_range_has_reservation(current->mem, aligned, pages))
                     page = aligned;
             }
-            if (!pt_is_hole(current->mem, page, pages))
+            if (!pt_is_hole(current->mem, page, pages) || mem_range_has_reservation(current->mem, page, pages))
                 return _ENOMEM;
             if ((err = pt_map_lazy(current->mem, page, pages, prot)) < 0)
                 return err;

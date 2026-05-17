@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include "kernel/calls.h"
 #include "fs/path.h"
+#include "misc.h"
 
 static int __path_normalize(const char *at_path, const char *path, char *out, int flags, int levels) {
     // you must choose one
@@ -132,7 +133,6 @@ static int __path_normalize(const char *at_path, const char *path, char *out, in
 }
 
 int path_normalize(struct fd *at, const char *path, char *out, int flags) {
-    assert(at != NULL);
     if (strcmp(path, "") == 0)
         return _ENOENT;
 
@@ -143,6 +143,10 @@ int path_normalize(struct fd *at, const char *path, char *out, int flags) {
     else if (at == AT_PWD)
         at = current->fs->pwd;
     unlock(&current->fs->lock);
+    if (at == NULL && path[0] != '/')
+        return _EBADF;
+    if (at != NULL && IS_ERR(at))
+        return PTR_ERR(at);
 
     char at_path[MAX_PATH];
     if (at != NULL) {

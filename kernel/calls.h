@@ -293,8 +293,8 @@ int_t sys_reboot(int_t magic, int_t magic2, int_t cmd);
 struct uname {
     char system[UNAME_LENGTH];   // Linux
     char hostname[UNAME_LENGTH]; // my-compotar
-    char release[UNAME_LENGTH];  // 1.2.3-ish
-    char version[UNAME_LENGTH];  // SUPER AWESOME
+    char release[UNAME_LENGTH];  // 1.2.3-linuxkit
+    char version[UNAME_LENGTH];  // Block Emulation
     char arch[UNAME_LENGTH];     // aarch64
     char domain[UNAME_LENGTH];   // lol
 };

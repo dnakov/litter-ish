@@ -144,9 +144,26 @@ static void session_cleanup(struct subprocess_info *info) {
 
 void linux_start_session(const char *exe, const char *const *argv, const char *const *envp, StartSessionDoneBlock done) {
     struct ish_session *session = kzalloc(sizeof(*session), GFP_KERNEL);
+    if (session == NULL) {
+        done(-ENOMEM, 0, NULL);
+        return;
+    }
     session->tty = ios_pty_open(&session->terminal);
+    if (IS_ERR(session->tty)) {
+        int err = PTR_ERR(session->tty);
+        kfree(session);
+        done(err, 0, NULL);
+        return;
+    }
     session->callback = done;
     struct subprocess_info *proc = call_usermodehelper_setup(exe, (char **) argv, (char **) envp, GFP_KERNEL, session_init, session_cleanup, session);
+    if (proc == NULL) {
+        fput(session->tty);
+        objc_put(session->terminal);
+        kfree(session);
+        done(-ENOMEM, 0, NULL);
+        return;
+    }
     int err = call_usermodehelper_exec(proc, UMH_WAIT_EXEC);
     if (err < 0)
         done(err, 0, NULL);
@@ -177,11 +194,16 @@ ssize_t linux_read_file(const char *path, char *buf, size_t size) {
     return res;
 }
 ssize_t linux_write_file(const char *path, const char *buf, size_t size) {
-    struct file *filp = filp_open(path, O_WRONLY, 0);
+    struct file *filp = filp_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (IS_ERR(filp))
+        return PTR_ERR(filp);
     ssize_t res = vfs_write(filp, buf, size, NULL);
     filp_close(filp, NULL);
     return res;
 }
 int linux_remove_directory(const char *path) {
     return init_rmdir(path);
+}
+int linux_create_directory(const char *path, int mode) {
+    return init_mkdir(path, mode);
 }

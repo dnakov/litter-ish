@@ -6,6 +6,8 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleDisplayName</key>
+	<string>LinuxKit</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -23,11 +25,11 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>This is required for connecting to localhost and using the ping command.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Programs running in iSH will be allowed to track your location in the background.</string>
+	<string>Programs running in ios-linuxkit will be allowed to track your location in the background.</string>
 	<key>NSLocationAlwaysUsageDescription</key>
-	<string>Programs running in iSH will be allowed to track your location in the background.</string>
+	<string>Programs running in ios-linuxkit will be allowed to track your location in the background.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Programs running in iSH will be allowed to see your location.</string>
+	<string>Programs running in ios-linuxkit will be allowed to see your location.</string>
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>app.ish.scene</string>
@@ -59,6 +61,13 @@
 	</array>
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<key>UIAppFonts</key>
+	<array>
+		<string>JetBrainsMonoNerdFontMono-Regular.ttf</string>
+		<string>JetBrainsMonoNerdFontMono-Bold.ttf</string>
+		<string>FiraCodeNerdFontMono-Regular.ttf</string>
+		<string>FiraCodeNerdFontMono-Bold.ttf</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

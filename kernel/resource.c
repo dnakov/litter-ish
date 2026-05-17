@@ -248,18 +248,26 @@ int_t sys_sched_getparam(pid_t_ UNUSED(pid), addr_t param_addr) {
         return _EFAULT;
     return 0;
 }
+int64_t sys_sched_setparam(pid_t_ UNUSED(pid), addr_t param_addr) {
+    int_t sched_priority;
+    if (user_get(param_addr, sched_priority))
+        return _EFAULT;
+    // iSH does not emulate guest scheduling priority, but many managed
+    // runtimes treat sched_setparam failure as fatal during worker setup.
+    // Accept readable requests as a no-op compatibility success.
+    return 0;
+}
 #define SCHED_OTHER_ 0
 int_t sys_sched_getscheduler(pid_t_ UNUSED(pid)) {
     return SCHED_OTHER_;
 }
-int_t sys_sched_setscheduler(pid_t_ UNUSED(pid), int_t policy, addr_t param_addr) {
-    if (policy != SCHED_OTHER_)
-        return _EINVAL;
+int64_t sys_sched_setscheduler(pid_t_ UNUSED(pid), int_t UNUSED(policy), addr_t param_addr) {
     int_t sched_priority;
     if (user_get(param_addr, sched_priority))
         return _EFAULT;
-    if (sched_priority != 0)
-        return _EINVAL;
+    // Same compatibility policy as sched_setparam: scheduling policy/priority
+    // changes are not represented internally, but should not abort runtimes
+    // that merely try to tune helper threads.
     return 0;
 }
 

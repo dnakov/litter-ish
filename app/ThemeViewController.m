@@ -77,9 +77,10 @@ struct PaletteTextFields {
         _paletteTextFields[i].foregroundTextField = [self detailTextFieldWithText:palette.foregroundColor monospaced:YES];
         _paletteTextFields[i].backgroundTextField = [self detailTextFieldWithText:palette.backgroundColor monospaced:YES];
         _paletteTextFields[i].cursorTextField = [self detailTextFieldWithText:palette.cursorColor monospaced:YES];
+        NSArray<NSString *> *colorOverrides = palette.colorPaletteOverrides.count == COLORS ? palette.colorPaletteOverrides : nil;
         NSMutableArray<UITextField *> *textFields = [NSMutableArray new];
         for (int j = 0; j < COLORS; ++j) {
-            UITextField *textField = [self detailTextFieldWithText:palette.colorPaletteOverrides ? palette.colorPaletteOverrides[j] : nil monospaced: YES];
+            UITextField *textField = [self detailTextFieldWithText:colorOverrides ? colorOverrides[j] : nil monospaced: YES];
             textField.autocorrectionType = UITextAutocorrectionTypeNo;
             textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
             [textFields addObject:textField];
@@ -328,8 +329,13 @@ enum {
         int empty = 0;
         int valid = 0;
         for (int j = 0; j < COLORS; ++j) {
-            empty += !_paletteTextFields[i].colorTextFields[j].text.length;
-            valid += validColor(_paletteTextFields[i].colorTextFields[j]);
+            UITextField *colorTextField = _paletteTextFields[i].colorTextFields[j];
+            if (!colorTextField.text.length) {
+                empty++;
+                colorTextField.textColor = nil;
+                continue;
+            }
+            valid += validColor(colorTextField);
         }
         validColors &= (empty == COLORS || valid == COLORS);
     }

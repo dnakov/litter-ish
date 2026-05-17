@@ -12,7 +12,6 @@
 #import "ArrowBarButton.h"
 #import "UserPreferences.h"
 #import "AboutViewController.h"
-#import "CurrentRoot.h"
 #import "NSObject+SaneKVO.h"
 #import "LinuxInterop.h"
 #include "kernel/init.h"
@@ -40,7 +39,6 @@
 @property (weak, nonatomic) IBOutlet NSLayoutConstraint *barTrailing;
 @property (weak, nonatomic) IBOutlet NSLayoutConstraint *barButtonWidth;
 @property (weak, nonatomic) IBOutlet NSLayoutConstraint *barHeight;
-@property (weak, nonatomic) IBOutlet UIView *settingsBadge;
 
 @property (weak, nonatomic) IBOutlet UIButton *infoButton;
 @property (weak, nonatomic) IBOutlet UIButton *pasteButton;
@@ -83,12 +81,6 @@
                selector:@selector(keyboardDidSomething:)
                    name:UIKeyboardDidChangeFrameNotification
                  object:nil];
-    [center addObserver:self
-               selector:@selector(_updateBadge)
-                   name:FsUpdatedNotification
-                 object:nil];
-
-
     [self _updateStyleFromPreferences:NO];
     
     if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
@@ -126,7 +118,6 @@
             [self _updateStyleFromPreferences:YES];
         });
     }];
-    [self _updateBadge];
 }
 
 - (void)awakeFromNib {
@@ -145,13 +136,13 @@
 }
 
 - (void)viewDidAppear:(BOOL)animated {
-    [AppDelegate maybePresentStartupMessageOnViewController:self];
     [super viewDidAppear:animated];
 }
 
 - (void)startNewSession {
     int err = [self startSession];
     if (err < 0) {
+        NSLog(@"could not start session: %d", err);
         [self showMessage:@"could not start session"
                  subtitle:[NSString stringWithFormat:@"error code %d", err]];
     }
@@ -309,10 +300,6 @@
 }
 - (void)_updateStyleAnimated {
     [self _updateStyleFromPreferences:YES];
-}
-
-- (void)_updateBadge {
-    self.settingsBadge.hidden = !FsNeedsRepositoryUpdate();
 }
 
 - (UIStatusBarStyle)preferredStatusBarStyle {

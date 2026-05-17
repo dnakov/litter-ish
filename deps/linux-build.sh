@@ -35,10 +35,13 @@ if [[ -n "$regen_config" ]]; then
 fi
 
 case "$(uname)" in
-    Darwin) cpus=$(sysctl -n hw.ncpu) ;;
-    Linux) cpus=$(nproc) ;;
+    Darwin) cpus=$(sysctl -n hw.ncpu 2>/dev/null || true) ;;
+    Linux) cpus=$(nproc 2>/dev/null || true) ;;
     *) cpus=1 ;;
 esac
+if [[ -z "$cpus" ]]; then
+    cpus=1
+fi
 
 make -C "$srctree" O="$(realpath "$objtree")" "${makeargs[@]}" olddefconfig
 

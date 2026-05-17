@@ -15,6 +15,9 @@
 #include "fs/path.h"
 #include "fs/real.h"
 
+int fakefs_bind_mount(const char *linux_path, const char *host_path, bool read_only);
+int fakefs_bind_unmount(const char *linux_path);
+
 const NSFileCoordinatorWritingOptions NSFileCoordinatorWritingForCreating = NSFileCoordinatorWritingForMerging;
 
 @interface DirectoryPicker : NSObject <UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate>
@@ -98,17 +101,140 @@ static NSURL *url_for_mount(struct mount *mount) {
 }
 
 static NSString *const kMountBookmarks = @"iOS Mount Bookmarks";
+static NSString *const kExternalFolderMounts = @"iOS External Folder Mounts";
+static NSString *const kExternalFolderMountBookmarkKey = @"bookmark";
+static NSString *const kExternalFolderMountPathKey = @"path";
+static NSString *const kExternalFolderMountDisplayNameKey = @"displayName";
 #define BOOKMARK_PATH_ENCODING NSISOLatin1StringEncoding
 // To avoid locking issues, only access from the main thread
 static NSMutableDictionary<NSString *, NSData *> *ios_mount_bookmarks;
+static NSMutableDictionary<NSString *, NSDictionary<NSString *, id> *> *external_folder_mounts;
+static NSMutableDictionary<NSString *, NSURL *> *external_folder_mount_urls;
 static bool mount_from_bookmarks = false; // This is a hack because I am bad at parameter passing
-static void sync_bookmarks(void) {
-    [NSUserDefaults.standardUserDefaults setObject:ios_mount_bookmarks forKey:kMountBookmarks];
-}
-void iosfs_init(void) {
+static void ensure_ios_mount_bookmarks_loaded(void) {
+    if (ios_mount_bookmarks != nil)
+        return;
+
     ios_mount_bookmarks = [NSUserDefaults.standardUserDefaults dictionaryForKey:kMountBookmarks].mutableCopy;
     if (ios_mount_bookmarks == nil)
         ios_mount_bookmarks = [NSMutableDictionary new];
+}
+static void sync_bookmarks(void) {
+    ensure_ios_mount_bookmarks_loaded();
+    [NSUserDefaults.standardUserDefaults setObject:ios_mount_bookmarks forKey:kMountBookmarks];
+}
+static void ensure_external_folder_mounts_loaded(void) {
+    if (external_folder_mounts != nil)
+        return;
+
+    external_folder_mounts = [NSUserDefaults.standardUserDefaults dictionaryForKey:kExternalFolderMounts].mutableCopy;
+    if (external_folder_mounts == nil)
+        external_folder_mounts = [NSMutableDictionary new];
+    external_folder_mount_urls = [NSMutableDictionary new];
+}
+static void sync_external_folder_mounts(void) {
+    ensure_external_folder_mounts_loaded();
+    [NSUserDefaults.standardUserDefaults setObject:external_folder_mounts forKey:kExternalFolderMounts];
+}
+static NSString *mount_point_for_external_folder_name(NSString *name) {
+    return [@"/mnt" stringByAppendingPathComponent:name];
+}
+static NSError *external_folder_mount_error(NSInteger code, NSString *message) {
+    return [NSError errorWithDomain:@"io.carmo.ios-linuxkit.mounts"
+                               code:code
+                           userInfo:@{NSLocalizedDescriptionKey: message}];
+}
+static NSString *sanitized_external_folder_name(NSString *name) {
+    if (name.length == 0)
+        name = @"folder";
+
+    NSMutableString *result = [NSMutableString new];
+    BOOL lastWasSeparator = NO;
+    for (NSUInteger i = 0; i < name.length; i++) {
+        unichar c = [name characterAtIndex:i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.') {
+            [result appendFormat:@"%C", c];
+            lastWasSeparator = NO;
+        } else if (c == '-' || !lastWasSeparator) {
+            [result appendString:@"-"];
+            lastWasSeparator = YES;
+        }
+    }
+
+    NSCharacterSet *trimCharacters = [NSCharacterSet characterSetWithCharactersInString:@"-."];
+    NSString *trimmed = [result stringByTrimmingCharactersInSet:trimCharacters];
+    if (trimmed.length == 0 || [trimmed isEqualToString:@"."] || [trimmed isEqualToString:@".."])
+        return @"folder";
+    return trimmed;
+}
+static NSString *unique_external_folder_name(NSString *baseName) {
+    ensure_external_folder_mounts_loaded();
+
+    NSString *candidate = baseName;
+    NSUInteger suffix = 2;
+    while (external_folder_mounts[candidate] != nil) {
+        candidate = [NSString stringWithFormat:@"%@-%lu", baseName, (unsigned long) suffix];
+        suffix++;
+    }
+    return candidate;
+}
+static int bind_external_folder_mount(NSString *name, NSURL *url) {
+    NSString *mountPoint = mount_point_for_external_folder_name(name);
+    return fakefs_bind_mount(mountPoint.fileSystemRepresentation, url.path.fileSystemRepresentation, false);
+}
+static void apply_external_folder_mounts(void) {
+    ensure_external_folder_mounts_loaded();
+
+    BOOL updated = NO;
+    for (NSString *name in external_folder_mounts.allKeys.copy) {
+        NSDictionary<NSString *, id> *entry = external_folder_mounts[name];
+        NSData *bookmark = entry[kExternalFolderMountBookmarkKey];
+        if (![bookmark isKindOfClass:NSData.class]) {
+            [external_folder_mounts removeObjectForKey:name];
+            updated = YES;
+            continue;
+        }
+
+        BOOL stale = NO;
+        NSError *error = nil;
+        NSURL *url = [NSURL URLByResolvingBookmarkData:bookmark
+                                               options:0
+                                         relativeToURL:nil
+                                   bookmarkDataIsStale:&stale
+                                                 error:&error];
+        if (url == nil) {
+            NSLog(@"restoring external folder mount %@ failed: %@", name, error);
+            continue;
+        }
+        if (![url startAccessingSecurityScopedResource]) {
+            NSLog(@"restoring external folder mount %@ failed: permission denied", name);
+            continue;
+        }
+
+        int err = bind_external_folder_mount(name, url);
+        if (err < 0) {
+            NSLog(@"binding external folder mount %@ failed with error %d", name, err);
+            [url stopAccessingSecurityScopedResource];
+            continue;
+        }
+
+        external_folder_mount_urls[name] = url;
+        if (stale) {
+            NSData *updatedBookmark = [url bookmarkDataWithOptions:0 includingResourceValuesForKeys:nil relativeToURL:nil error:nil];
+            if (updatedBookmark != nil) {
+                NSMutableDictionary<NSString *, id> *updatedEntry = entry.mutableCopy;
+                updatedEntry[kExternalFolderMountBookmarkKey] = updatedBookmark;
+                updatedEntry[kExternalFolderMountPathKey] = url.path ?: @"";
+                external_folder_mounts[name] = updatedEntry;
+                updated = YES;
+            }
+        }
+    }
+    if (updated)
+        sync_external_folder_mounts();
+}
+void iosfs_init(void) {
+    ensure_ios_mount_bookmarks_loaded();
 
     mount_from_bookmarks = true;
     for (NSString *path in ios_mount_bookmarks.allKeys) {
@@ -121,11 +247,91 @@ void iosfs_init(void) {
     }
     mount_from_bookmarks = false;
     sync_bookmarks();
+    apply_external_folder_mounts();
 }
 
 void iosfs_clear_all_bookmarks(void) {
+    ensure_ios_mount_bookmarks_loaded();
     [ios_mount_bookmarks removeAllObjects];
     sync_bookmarks();
+    ensure_external_folder_mounts_loaded();
+    for (NSString *name in external_folder_mounts.allKeys.copy) {
+        fakefs_bind_unmount(mount_point_for_external_folder_name(name).fileSystemRepresentation);
+        [external_folder_mount_urls[name] stopAccessingSecurityScopedResource];
+    }
+    [external_folder_mounts removeAllObjects];
+    [external_folder_mount_urls removeAllObjects];
+    sync_external_folder_mounts();
+}
+
+NSArray<NSDictionary<NSString *, NSString *> *> *iosfs_external_folder_mounts(void) {
+    ensure_external_folder_mounts_loaded();
+
+    NSMutableArray<NSDictionary<NSString *, NSString *> *> *mounts = [NSMutableArray new];
+    NSArray<NSString *> *names = [external_folder_mounts.allKeys sortedArrayUsingSelector:@selector(localizedStandardCompare:)];
+    for (NSString *name in names) {
+        NSDictionary<NSString *, id> *entry = external_folder_mounts[name];
+        NSString *displayName = [entry[kExternalFolderMountDisplayNameKey] isKindOfClass:NSString.class] ? entry[kExternalFolderMountDisplayNameKey] : name;
+        NSString *path = [entry[kExternalFolderMountPathKey] isKindOfClass:NSString.class] ? entry[kExternalFolderMountPathKey] : @"";
+        NSString *mountPoint = mount_point_for_external_folder_name(name);
+        [mounts addObject:@{
+            @"name": name,
+            @"displayName": displayName,
+            @"path": path,
+            @"mountPoint": mountPoint,
+        }];
+    }
+    return mounts;
+}
+
+BOOL iosfs_add_external_folder_mount_url(NSURL *url, NSError **error) {
+    ensure_external_folder_mounts_loaded();
+
+    if (![url startAccessingSecurityScopedResource]) {
+        if (error != NULL)
+            *error = external_folder_mount_error(_EPERM, @"ios-linuxkit does not have permission to access that folder.");
+        return NO;
+    }
+
+    NSError *bookmarkError = nil;
+    NSData *bookmark = [url bookmarkDataWithOptions:0 includingResourceValuesForKeys:nil relativeToURL:nil error:&bookmarkError];
+    if (bookmark == nil) {
+        [url stopAccessingSecurityScopedResource];
+        if (error != NULL)
+            *error = bookmarkError ?: external_folder_mount_error(_EINVAL, @"The folder could not be saved.");
+        return NO;
+    }
+
+    NSString *baseName = sanitized_external_folder_name(url.lastPathComponent);
+    NSString *name = unique_external_folder_name(baseName);
+    int err = bind_external_folder_mount(name, url);
+    if (err < 0) {
+        [url stopAccessingSecurityScopedResource];
+        if (error != NULL) {
+            NSString *message = [NSString stringWithFormat:@"The folder could not be mounted at %@.", mount_point_for_external_folder_name(name)];
+            *error = external_folder_mount_error(err, message);
+        }
+        return NO;
+    }
+
+    external_folder_mounts[name] = @{
+        kExternalFolderMountBookmarkKey: bookmark,
+        kExternalFolderMountPathKey: url.path ?: @"",
+        kExternalFolderMountDisplayNameKey: url.lastPathComponent ?: name,
+    };
+    external_folder_mount_urls[name] = url;
+    sync_external_folder_mounts();
+    return YES;
+}
+
+void iosfs_remove_external_folder_mount(NSString *name) {
+    ensure_external_folder_mounts_loaded();
+
+    fakefs_bind_unmount(mount_point_for_external_folder_name(name).fileSystemRepresentation);
+    [external_folder_mount_urls[name] stopAccessingSecurityScopedResource];
+    [external_folder_mount_urls removeObjectForKey:name];
+    [external_folder_mounts removeObjectForKey:name];
+    sync_external_folder_mounts();
 }
 
 static int iosfs_mount(struct mount *mount) {

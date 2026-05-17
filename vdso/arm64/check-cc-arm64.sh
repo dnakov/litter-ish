@@ -8,9 +8,9 @@ if [ -z "$CLANG" ]; then
     exit 1
 fi
 
-# Try to compile a simple aarch64 program
+# Try to compile and link a simple aarch64 ELF shared object
 TMPFILE=$(mktemp /tmp/check-cc-arm64.XXXXXX.c)
-TMPOUT=$(mktemp /tmp/check-cc-arm64.XXXXXX.o)
+TMPOUT=$(mktemp /tmp/check-cc-arm64.XXXXXX.so)
 
 cat > "$TMPFILE" << 'EOF'
 void _start(void) {
@@ -18,15 +18,15 @@ void _start(void) {
 }
 EOF
 
-"$CLANG" -target aarch64-linux-gnu -c "$TMPFILE" -o "$TMPOUT" 2>/dev/null
+"$CLANG" -target aarch64-linux-gnu -fuse-ld=lld -shared -nostdlib -x c "$TMPFILE" -o "$TMPOUT" 2>/dev/null
 RESULT=$?
 
 rm -f "$TMPFILE" "$TMPOUT"
 
 if [ $RESULT -ne 0 ]; then
-    echo "Error: $CLANG cannot compile for aarch64 target"
+    echo "Error: $CLANG cannot link aarch64-linux-gnu with lld"
     exit 1
 fi
 
-echo "ARM64 cross-compiler check passed"
+echo "ARM64 cross-compiler/linker check passed"
 exit 0

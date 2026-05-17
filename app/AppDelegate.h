@@ -16,8 +16,6 @@
 + (int)bootError;
 #endif
 
-+ (void)maybePresentStartupMessageOnViewController:(UIViewController *)vc;
-
 @end
 
 #if !ISH_LINUX
@@ -25,4 +23,3 @@ extern NSString *const ProcessExitedNotification;
 #else
 extern NSString *const KernelPanicNotification;
 #endif
-

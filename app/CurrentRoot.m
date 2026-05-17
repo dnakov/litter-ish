@@ -43,6 +43,11 @@ static int remove_directory(const char *path) {
 #define read_file linux_read_file
 #define write_file linux_write_file
 #define remove_directory linux_remove_directory
+#define create_directory(path, mode) linux_create_directory(path, mode)
+#endif
+
+#ifndef create_directory
+#define create_directory(path, mode) generic_mkdirat(AT_PWD, path, mode)
 #endif
 
 void FsInitialize(void) {
@@ -91,8 +96,8 @@ bool FsNeedsRepositoryUpdate(void) {
 void FsUpdateOnlyRepositoriesFile(void) {
     NSURL *repositories = [NSBundle.mainBundle URLForResource:@"repositories" withExtension:@"txt"];
     if (repositories != nil) {
-        NSMutableData *repositoriesData = [@"# This file contains pinned repositories managed by iSH. If the /ish directory\n"
-                                           @"# exists, iSH uses the metadata stored in it to keep this file up to date (by\n"
+        NSMutableData *repositoriesData = [@"# This file contains pinned repositories managed by ios-linuxkit. If the /ish directory\n"
+                                           @"# exists, ios-linuxkit uses the metadata stored in it to keep this file up to date (by\n"
                                            @"# overwriting the contents on boot.)\n" dataUsingEncoding:NSUTF8StringEncoding].mutableCopy;
         [repositoriesData appendData:[NSData dataWithContentsOfURL:repositories]];
         write_file("/etc/apk/repositories", repositoriesData.bytes, repositoriesData.length);
@@ -169,7 +174,7 @@ void FsApplyOverlay(void) {
         // Ensure parent directories exist in guest fs
         NSString *parentDir = [dst stringByDeletingLastPathComponent];
         if (parentDir.length > 1)
-            generic_mkdirat(AT_PWD, parentDir.UTF8String, 0755);
+            create_directory(parentDir.UTF8String, 0755);
 
         // Read file from patch bundle
         NSURL *srcURL = [patchBundle.bundleURL URLByAppendingPathComponent:src];
@@ -191,7 +196,7 @@ void FsApplyOverlay(void) {
     }
 
     // Record installed version
-    generic_mkdirat(AT_PWD, "/ish", 0755);
+    create_directory("/ish", 0755);
     NSString *versionStr = [NSString stringWithFormat:@"%d\n", patchVersion];
     write_file("/ish/overlay-version", versionStr.UTF8String,
                [versionStr lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);

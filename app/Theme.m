@@ -109,12 +109,11 @@ char *get_documents_directory_impl(void) {
     id colorPaletteOverrides = serializedRepresentation[@"colorPaletteOverrides"];
     BOOL validColorPalette = YES;
     if (colorPaletteOverrides) {
-        if ([colorPaletteOverrides isKindOfClass:NSArray.class]) {
+        validColorPalette = [colorPaletteOverrides isKindOfClass:NSArray.class] && [colorPaletteOverrides count] == 16;
+        if (validColorPalette) {
             for (id color in colorPaletteOverrides) {
-                validColorPalette = validColorPalette || VALID_COLOR(color);
+                validColorPalette = validColorPalette && VALID_COLOR(color);
             }
-        } else {
-            validColorPalette = NO;
         }
     }
     if (VALID_COLOR(foregroundColor) && VALID_COLOR(backgroundColor) && (!cursorColor || VALID_COLOR(cursorColor)) && validColorPalette) {
@@ -251,31 +250,278 @@ char *(*get_documents_directory)(void);
     }
 }
 
++ (Theme *)themeWithName:(NSString *)name foreground:(NSString *)foreground background:(NSString *)background cursor:(NSString *)cursor appearance:(ThemeAppearance *)appearance palette:(NSArray<NSString *> *)palette {
+    return [[self alloc] initWithName:name
+                              palette:[[Palette alloc] initWithForegroundColor:foreground
+                                                               backgroundColor:background
+                                                                   cursorColor:cursor
+                                                         colorPaletteOverrides:palette]
+                           appearance:appearance];
+}
+
 + (NSArray<Theme *> *)defaultThemes {
     static NSArray<Theme *> *defaultThemes;
     if (!defaultThemes) {
         defaultThemes = @[
-            [[self alloc] initWithName:@"Default"
-                          lightPalette:[[Palette alloc] initWithForegroundColor:@"#000"
-                                                                backgroundColor:@"#fff"
-                                                                    cursorColor:nil
-                                                          colorPaletteOverrides:nil]
-                           darkPalette:[[Palette alloc] initWithForegroundColor:@"#fff"
-                                                                backgroundColor:@"#000"
-                                                                    cursorColor:nil
-                                                          colorPaletteOverrides:nil]
-                            appearance:nil],
-            [[self alloc] initWithName:@"1337"
-                               palette:[[Palette alloc] initWithForegroundColor:@"#0f0"
-                                                                backgroundColor:@"#000"
-                                                                    cursorColor:nil
-                                                          colorPaletteOverrides:nil]
-                            appearance:ThemeAppearance.alwaysDark],
-            [[self alloc] initWithName:@"Solarized"
-                          lightPalette:[[Palette alloc] initWithForegroundColor:@"#657b83"
-                                                                backgroundColor:@"#fdf6e3"
-                                                                    cursorColor:nil
-                                                          colorPaletteOverrides:@[
+            [self themeWithName:@"xterm"
+                  foreground:@"#e5e5e5"
+                  background:@"#000000"
+                      cursor:@"#e5e5e5"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#000000",
+                            @"#cd0000",
+                            @"#00cd00",
+                            @"#cdcd00",
+                            @"#0000cd",
+                            @"#cd00cd",
+                            @"#00cdcd",
+                            @"#e5e5e5",
+                            @"#4d4d4d",
+                            @"#ff0000",
+                            @"#00ff00",
+                            @"#ffff00",
+                            @"#0000ff",
+                            @"#ff00ff",
+                            @"#00ffff",
+                            @"#ffffff",
+                      ]],
+            [self themeWithName:@"tango"
+                  foreground:@"#ffffff"
+                  background:@"#000000"
+                      cursor:@"#ffffff"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#000000",
+                            @"#cc0000",
+                            @"#4e9a06",
+                            @"#c4a000",
+                            @"#3465a4",
+                            @"#75507b",
+                            @"#06989a",
+                            @"#d3d7cf",
+                            @"#555753",
+                            @"#ef2929",
+                            @"#8ae234",
+                            @"#fce94f",
+                            @"#729fcf",
+                            @"#ad7fa8",
+                            @"#34e2e2",
+                            @"#eeeeec",
+                      ]],
+            [self themeWithName:@"monokai"
+                  foreground:@"#fdfff1"
+                  background:@"#272822"
+                      cursor:@"#fdfff1"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#272822",
+                            @"#f92672",
+                            @"#a6e22e",
+                            @"#e6db74",
+                            @"#fd971f",
+                            @"#ae81ff",
+                            @"#66d9ef",
+                            @"#fdfff1",
+                            @"#6e7066",
+                            @"#f92672",
+                            @"#a6e22e",
+                            @"#e6db74",
+                            @"#fd971f",
+                            @"#ae81ff",
+                            @"#66d9ef",
+                            @"#fdfff1",
+                      ]],
+            [self themeWithName:@"monokai-pro"
+                  foreground:@"#fcfcfa"
+                  background:@"#2d2a2e"
+                      cursor:@"#fcfcfa"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#403e41",
+                            @"#ff6188",
+                            @"#a9dc76",
+                            @"#ffd866",
+                            @"#fc9867",
+                            @"#ab9df2",
+                            @"#78dce8",
+                            @"#fcfcfa",
+                            @"#727072",
+                            @"#ff6188",
+                            @"#a9dc76",
+                            @"#ffd866",
+                            @"#fc9867",
+                            @"#ab9df2",
+                            @"#78dce8",
+                            @"#fcfcfa",
+                      ]],
+            [self themeWithName:@"ristretto"
+                  foreground:@"#fff1f3"
+                  background:@"#2c2525"
+                      cursor:@"#fff1f3"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#2c2525",
+                            @"#fd6883",
+                            @"#adda78",
+                            @"#f9cc6c",
+                            @"#f38d70",
+                            @"#a8a9eb",
+                            @"#85dacc",
+                            @"#fff1f3",
+                            @"#72696a",
+                            @"#fd6883",
+                            @"#adda78",
+                            @"#f9cc6c",
+                            @"#f38d70",
+                            @"#a8a9eb",
+                            @"#85dacc",
+                            @"#fff1f3",
+                      ]],
+            [self themeWithName:@"dark"
+                  foreground:@"#d4d4d4"
+                  background:@"#1e1e1e"
+                      cursor:@"#d4d4d4"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#000000",
+                            @"#cd3131",
+                            @"#0dbc79",
+                            @"#e5e510",
+                            @"#2472c8",
+                            @"#bc3fbc",
+                            @"#11a8cd",
+                            @"#e5e5e5",
+                            @"#666666",
+                            @"#f14c4c",
+                            @"#23d18b",
+                            @"#f5f543",
+                            @"#3b8eea",
+                            @"#d670d6",
+                            @"#29b8db",
+                            @"#ffffff",
+                      ]],
+            [self themeWithName:@"light"
+                  foreground:@"#383a42"
+                  background:@"#ffffff"
+                      cursor:@"#383a42"
+                  appearance:ThemeAppearance.alwaysLight
+                     palette:@[
+                            @"#000000",
+                            @"#e45649",
+                            @"#50a14f",
+                            @"#c18401",
+                            @"#4078f2",
+                            @"#a626a4",
+                            @"#0184bc",
+                            @"#a0a1a7",
+                            @"#5c6370",
+                            @"#e06c75",
+                            @"#98c379",
+                            @"#d19a66",
+                            @"#61afef",
+                            @"#c678dd",
+                            @"#56b6c2",
+                            @"#ffffff",
+                      ]],
+            [self themeWithName:@"dracula"
+                  foreground:@"#f8f8f2"
+                  background:@"#282a36"
+                      cursor:@"#f8f8f2"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#21222c",
+                            @"#ff5555",
+                            @"#50fa7b",
+                            @"#f1fa8c",
+                            @"#bd93f9",
+                            @"#ff79c6",
+                            @"#8be9fd",
+                            @"#f8f8f2",
+                            @"#6272a4",
+                            @"#ff6e6e",
+                            @"#69ff94",
+                            @"#ffffa5",
+                            @"#d6acff",
+                            @"#ff92df",
+                            @"#a4ffff",
+                            @"#ffffff",
+                      ]],
+            [self themeWithName:@"catppuccin"
+                  foreground:@"#cdd6f4"
+                  background:@"#1e1e2e"
+                      cursor:@"#cdd6f4"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#45475a",
+                            @"#f38ba8",
+                            @"#a6e3a1",
+                            @"#f9e2af",
+                            @"#89b4fa",
+                            @"#f5c2e7",
+                            @"#94e2d5",
+                            @"#bac2de",
+                            @"#585b70",
+                            @"#f38ba8",
+                            @"#a6e3a1",
+                            @"#f9e2af",
+                            @"#89b4fa",
+                            @"#f5c2e7",
+                            @"#94e2d5",
+                            @"#a6adc8",
+                      ]],
+            [self themeWithName:@"nord"
+                  foreground:@"#d8dee9"
+                  background:@"#2e3440"
+                      cursor:@"#d8dee9"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#3b4252",
+                            @"#bf616a",
+                            @"#a3be8c",
+                            @"#ebcb8b",
+                            @"#81a1c1",
+                            @"#b48ead",
+                            @"#88c0d0",
+                            @"#e5e9f0",
+                            @"#4c566a",
+                            @"#bf616a",
+                            @"#a3be8c",
+                            @"#ebcb8b",
+                            @"#81a1c1",
+                            @"#b48ead",
+                            @"#8fbcbb",
+                            @"#eceff4",
+                      ]],
+            [self themeWithName:@"gruvbox"
+                  foreground:@"#ebdbb2"
+                  background:@"#282828"
+                      cursor:@"#ebdbb2"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#282828",
+                            @"#cc241d",
+                            @"#98971a",
+                            @"#d79921",
+                            @"#458588",
+                            @"#b16286",
+                            @"#689d6a",
+                            @"#a89984",
+                            @"#928374",
+                            @"#fb4934",
+                            @"#b8bb26",
+                            @"#fabd2f",
+                            @"#83a598",
+                            @"#d3869b",
+                            @"#8ec07c",
+                            @"#ebdbb2",
+                      ]],
+            [self themeWithName:@"solarized"
+                  foreground:@"#839496"
+                  background:@"#002b36"
+                      cursor:@"#839496"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
                             @"#073642",
                             @"#dc322f",
                             @"#859900",
@@ -284,7 +530,7 @@ char *(*get_documents_directory)(void);
                             @"#d33682",
                             @"#2aa198",
                             @"#eee8d5",
-                            @"#002b36",
+                            @"#586e75",
                             @"#cb4b16",
                             @"#586e75",
                             @"#657b83",
@@ -292,39 +538,99 @@ char *(*get_documents_directory)(void);
                             @"#6c71c4",
                             @"#93a1a1",
                             @"#fdf6e3",
-                          ]]
-                           darkPalette:[[Palette alloc] initWithForegroundColor:@"#839496"
-                                                                backgroundColor:@"#002b36"
-                                                                    cursorColor:nil
-                                                          colorPaletteOverrides:@[
-                            @"#073642",
-                            @"#dc322f",
-                            @"#859900",
-                            @"#b58900",
-                            @"#268bd2",
-                            @"#d33682",
-                            @"#2aa198",
-                            @"#eee8d5",
-                            @"#002b36",
-                            @"#cb4b16",
-                            @"#586e75",
-                            @"#657b83",
-                            @"#839496",
-                            @"#6c71c4",
-                            @"#93a1a1",
-                            @"#fdf6e3",
-                           ]]
-                            appearance:nil
-            ],
-            // Because this is a hidden theme, it needs to be last. There's
-            // logic in UserPreferences and ThemesViewController which will not
-            // work correctly otherwise.
-            [[self alloc] initWithName:@"Hot Dog Stand"
-                               palette:[[Palette alloc] initWithForegroundColor:@"#ff0"
-                                                                backgroundColor:@"#f00"
-                                                                    cursorColor:nil
-                                                          colorPaletteOverrides:nil]
-                            appearance:nil],
+                      ]],
+            [self themeWithName:@"miasma"
+                  foreground:@"#c2c2b0"
+                  background:@"#222222"
+                      cursor:@"#c2c2b0"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#000000",
+                            @"#685742",
+                            @"#5f875f",
+                            @"#b36d43",
+                            @"#78824b",
+                            @"#bb7744",
+                            @"#c9a554",
+                            @"#d7c483",
+                            @"#666666",
+                            @"#685742",
+                            @"#5f875f",
+                            @"#b36d43",
+                            @"#78824b",
+                            @"#bb7744",
+                            @"#c9a554",
+                            @"#d7c483",
+                      ]],
+            [self themeWithName:@"github"
+                  foreground:@"#adbac7"
+                  background:@"#1c2128"
+                      cursor:@"#adbac7"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#545d68",
+                            @"#f47067",
+                            @"#57ab5a",
+                            @"#c69026",
+                            @"#539bf5",
+                            @"#b083f0",
+                            @"#39c5cf",
+                            @"#909dab",
+                            @"#636e7b",
+                            @"#ff938a",
+                            @"#6bc46d",
+                            @"#daaa3f",
+                            @"#6cb6ff",
+                            @"#dcbdfb",
+                            @"#56d4dd",
+                            @"#cdd9e5",
+                      ]],
+            [self themeWithName:@"gotham"
+                  foreground:@"#99d1ce"
+                  background:@"#0c1014"
+                      cursor:@"#99d1ce"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#0c1014",
+                            @"#c23127",
+                            @"#2aa889",
+                            @"#edb443",
+                            @"#195466",
+                            @"#4e5166",
+                            @"#33859e",
+                            @"#99d1ce",
+                            @"#0c1014",
+                            @"#c23127",
+                            @"#2aa889",
+                            @"#edb443",
+                            @"#195466",
+                            @"#4e5166",
+                            @"#33859e",
+                            @"#99d1ce",
+                      ]],
+            [self themeWithName:@"tokyo"
+                  foreground:@"#a9b1d6"
+                  background:@"#1a1b26"
+                      cursor:@"#a9b1d6"
+                  appearance:ThemeAppearance.alwaysDark
+                     palette:@[
+                            @"#15161e",
+                            @"#f7768e",
+                            @"#9ece6a",
+                            @"#e0af68",
+                            @"#7aa2f7",
+                            @"#bb9af7",
+                            @"#7dcfff",
+                            @"#a9b1d6",
+                            @"#414868",
+                            @"#f7768e",
+                            @"#9ece6a",
+                            @"#e0af68",
+                            @"#7aa2f7",
+                            @"#bb9af7",
+                            @"#7dcfff",
+                            @"#c0caf5",
+                      ]],
         ];
     }
     return defaultThemes;

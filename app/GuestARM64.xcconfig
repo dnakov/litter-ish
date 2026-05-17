@@ -4,3 +4,4 @@ ISH_GUEST_DEFINES = GUEST_ARM64=1
 GCC_PREPROCESSOR_DEFINITIONS = $(inherited) GUEST_ARM64=1
 
 ROOTFS_URL = dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.0-aarch64.tar.gz
+ROOTFS_ARCH = aarch64

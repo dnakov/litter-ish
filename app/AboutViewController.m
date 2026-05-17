@@ -12,6 +12,7 @@
 #import "Roots.h"
 #import "UserPreferences.h"
 #import "iOSFS.h"
+#import "MountsViewController.h"
 #import "UIApplication+OpenURL.h"
 #import "NSObject+SaneKVO.h"
 
@@ -23,13 +24,8 @@
 @property (weak, nonatomic) IBOutlet UITextField *bootCommandField;
 
 @property (weak, nonatomic) IBOutlet UITableViewCell *sendFeedback;
-@property (weak, nonatomic) IBOutlet UITableViewCell *openGithub;
-@property (weak, nonatomic) IBOutlet UITableViewCell *openFediverse;
-@property (weak, nonatomic) IBOutlet UITableViewCell *openDiscord;
 
-@property (weak, nonatomic) IBOutlet UITableViewCell *upgradeApkCell;
-@property (weak, nonatomic) IBOutlet UILabel *upgradeApkLabel;
-@property (weak, nonatomic) IBOutlet UIView *upgradeApkBadge;
+@property (weak, nonatomic) IBOutlet UITableViewCell *mountsCell;
 @property (weak, nonatomic) IBOutlet UITableViewCell *exportContainerCell;
 @property (weak, nonatomic) IBOutlet UITableViewCell *resetMountsCell;
 @property (weak, nonatomic) IBOutlet UITableViewCell *resetRootfsCell;
@@ -54,7 +50,7 @@
                                                                                  action:@selector(exitRecovery:)];
         self.navigationItem.leftBarButtonItem = nil;
     }
-    _versionLabel.text = [NSString stringWithFormat:@"iSH %@ (Build %@)",
+    _versionLabel.text = [NSString stringWithFormat:@"ios-linuxkit %@ (Build %@)",
                           [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"],
                           [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"]];
 
@@ -96,22 +92,15 @@
     self.launchCommandField.text = [UserPreferences.shared.launchCommand componentsJoinedByString:@" "];
     self.bootCommandField.text = [UserPreferences.shared.bootCommand componentsJoinedByString:@" "];
 
-    self.upgradeApkCell.userInteractionEnabled = FsNeedsRepositoryUpdate();
-    self.upgradeApkLabel.enabled = FsNeedsRepositoryUpdate();
-    self.upgradeApkBadge.hidden = !FsNeedsRepositoryUpdate();
     [self.tableView reloadData];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
     if (cell == self.sendFeedback) {
-        [UIApplication openURL:@"mailto:tblodt@icloud.com?subject=Feedback%20for%20iSH"];
-    } else if (cell == self.openGithub) {
-        [UIApplication openURL:@"https://github.com/ish-app/ish"];
-    } else if (cell == self.openFediverse) {
-        [UIApplication openURL:@"https://publ.ish.app/ish"];
-    } else if (cell == self.openDiscord) {
-        [UIApplication openURL:@"https://discord.gg/HFAXj44"];
+        [UIApplication openURL:@"https://github.com/rcarmo/ios-linuxkit/issues"];
+    } else if (cell == self.mountsCell) {
+        [self.navigationController pushViewController:[MountsViewController new] animated:YES];
     } else if (cell == self.exportContainerCell) {
         // copy the files to the app container so they can be extracted from iTunes file sharing
         NSURL *container = ContainerURL();
@@ -131,13 +120,9 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 1) { // filesystems / upgrade
+    if (section == 1) { // filesystems
         if (!FsIsManaged()) {
-            return @"The current filesystem is not managed by iSH.";
-        } else if (!FsNeedsRepositoryUpdate()) {
-            return [NSString stringWithFormat:@"The current filesystem is using %s, which is the latest version.", CURRENT_APK_VERSION_STRING];
-        } else {
-            return [NSString stringWithFormat:@"An upgrade to %s is available.", CURRENT_APK_VERSION_STRING];
+            return @"The current filesystem is not managed by ios-linuxkit.";
         }
     }
     return [super tableView:tableView titleForFooterInSection:section];

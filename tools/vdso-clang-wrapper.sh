@@ -1,0 +1,8 @@
+#!/bin/sh
+if [ -n "$ISH_VDSO_TOOLCHAIN_PATH" ]; then
+    export PATH="$ISH_VDSO_TOOLCHAIN_PATH:$PATH"
+fi
+if [ -n "$ISH_VDSO_TOOLCHAIN_DYLD_LIBRARY_PATH" ]; then
+    export DYLD_LIBRARY_PATH="$ISH_VDSO_TOOLCHAIN_DYLD_LIBRARY_PATH"
+fi
+exec "${ISH_VDSO_REAL_CLANG:-clang}" "$@"

@@ -61,6 +61,23 @@
 .endm
 
 /*
+ * Internal continue for future true-superblock segments.
+ * Code stream: [gadget addr][guest_pc (64-bit)][internal_code_ptr (64-bit)]
+ *
+ * This is deliberately not a normal chained pointer path: the continuation
+ * pointer is consumed only by this gadget, is never stored in jump_ip, and is
+ * never passed to fiber_ret_chain. The generator should store an offset while
+ * the block is reallocatable and patch this operand to a final code pointer in
+ * gen_end.
+ */
+.gadget internal_continue
+    ldr x8, [_pc], #8       // guest PC for observability/timer exits
+    ldr x9, [_pc]           // internal continuation code-stream pointer
+    str x8, [_cpu, #CPU_pc]
+    mov _pc, x9
+    gret
+
+/*
  * Unconditional branch (B)
  * Code stream: [gadget addr][fake_target (64-bit)]
  *
@@ -386,6 +403,194 @@ cbnz_32_t_unchained:
     b fiber_ret_chain
 
 /*
+ * CBZ/CBNZ with external taken edge and internal fallthrough edge.
+ * Code stream: [gadget addr][rt | sf<<8 | is_cbnz<<9]
+ *              [fake_target][internal_continue_ptr]
+ *
+ * The taken edge uses the normal external fake-IP/block->code chain path.
+ * The not-taken edge jumps to a private internal-continue record and never
+ * passes the interior pointer to fiber_ret_chain.
+ */
+.gadget cbz_fallthrough_internal
+    ldr x8, [_pc], #8       // rt | sf<<8 | is_cbnz<<9
+    ldr x9, [_pc], #8       // taken target (fake_ip or chained)
+    ldr x10, [_pc]          // internal_continue record pointer
+
+    and x11, x8, #0x1f      // rt
+    ubfx x12, x8, #8, #1    // sf
+    ubfx x13, x8, #9, #1    // is_cbnz
+    add x14, _cpu, #CPU_x0
+    cmp x11, #31
+    b.eq cbz_fi_xzr
+    ldr x15, [x14, x11, lsl #3]
+    b cbz_fi_test
+cbz_fi_xzr:
+    mov x15, #0
+cbz_fi_test:
+    cbnz x12, cbz_fi_test64
+    cmp w15, #0
+    b cbz_fi_select
+cbz_fi_test64:
+    cmp x15, #0
+cbz_fi_select:
+    cset w16, ne            // nonzero = 1, zero = 0
+    cmp w16, w13            // CBNZ takes when nonzero; CBZ takes when zero
+    b.eq cbz_fi_taken
+cbz_fi_not_taken:
+    mov _pc, x10
+    gret
+cbz_fi_taken:
+    inline_chain x9, cbz_fi_taken_unchained
+cbz_fi_taken_unchained:
+    and x11, x9, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x9
+    b fiber_ret_chain
+
+/*
+ * CBZ/CBNZ with internal taken edge and external fallthrough edge.
+ * Code stream: [gadget addr][rt | sf<<8 | is_cbnz<<9]
+ *              [internal_continue_ptr][fake_fallthrough]
+ *
+ * The taken edge jumps to a private internal-continue record and never passes
+ * the interior pointer to fiber_ret_chain. The not-taken edge uses the normal
+ * external fake-IP/block->code chain path.
+ */
+.gadget cbz_taken_internal
+    ldr x8, [_pc], #8       // rt | sf<<8 | is_cbnz<<9
+    ldr x9, [_pc], #8       // internal_continue record pointer
+    ldr x10, [_pc]          // fallthrough target (fake_ip or chained)
+
+    and x11, x8, #0x1f      // rt
+    ubfx x12, x8, #8, #1    // sf
+    ubfx x13, x8, #9, #1    // is_cbnz
+    add x14, _cpu, #CPU_x0
+    cmp x11, #31
+    b.eq cbz_ti_xzr
+    ldr x15, [x14, x11, lsl #3]
+    b cbz_ti_test
+cbz_ti_xzr:
+    mov x15, #0
+cbz_ti_test:
+    cbnz x12, cbz_ti_test64
+    cmp w15, #0
+    b cbz_ti_select
+cbz_ti_test64:
+    cmp x15, #0
+cbz_ti_select:
+    cset w16, ne            // nonzero = 1, zero = 0
+    cmp w16, w13            // CBNZ takes when nonzero; CBZ takes when zero
+    b.eq cbz_ti_taken
+cbz_ti_not_taken:
+    inline_chain x10, cbz_ti_not_taken_unchained
+cbz_ti_not_taken_unchained:
+    and x11, x10, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x10
+    b fiber_ret_chain
+cbz_ti_taken:
+    mov _pc, x9
+    gret
+
+/*
+ * Fused ADD/SUB immediate + CBZ/CBNZ of the result.
+ * Code stream: [gadget addr][rd | rn<<8 | imm12<<16 | op<<28 | sf<<29 | test_sf<<30]
+ *              [fake_target][fake_fallthrough]
+ * op=0 ADD, op=1 SUB. sf is the ADD/SUB width; test_sf is the CBZ/CBNZ width.
+ */
+.gadget fused_addsub_cbz
+    ldr x8, [_pc]
+    add _pc, _pc, #8
+    ldr x9, [_pc]
+    add _pc, _pc, #8
+    ldr x10, [_pc]
+    and x12, x8, #0x1f           // rd
+    ubfx x13, x8, #8, #5        // rn
+    ubfx x11, x8, #16, #12      // imm12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x13, lsl #3]
+    tbnz x8, #29, fused_addsub_cbz_64
+    tbnz x8, #28, fused_addsub_cbz_sub32
+    add w16, w15, w11
+    b fused_addsub_cbz_store
+fused_addsub_cbz_sub32:
+    sub w16, w15, w11
+    b fused_addsub_cbz_store
+fused_addsub_cbz_64:
+    tbnz x8, #28, fused_addsub_cbz_sub64
+    add x16, x15, x11
+    b fused_addsub_cbz_store
+fused_addsub_cbz_sub64:
+    sub x16, x15, x11
+fused_addsub_cbz_store:
+    str x16, [x14, x12, lsl #3]
+    tbnz x8, #30, fused_addsub_cbz_test64
+    cbz w16, fused_addsub_cbz_taken
+    b fused_addsub_cbz_not_taken
+fused_addsub_cbz_test64:
+    cbz x16, fused_addsub_cbz_taken
+fused_addsub_cbz_not_taken:
+    inline_chain x10, fused_addsub_cbz_nt_unchained
+fused_addsub_cbz_nt_unchained:
+    and x11, x10, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x10
+    b fiber_ret_chain
+fused_addsub_cbz_taken:
+    inline_chain x9, fused_addsub_cbz_t_unchained
+fused_addsub_cbz_t_unchained:
+    and x11, x9, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x9
+    b fiber_ret_chain
+
+.gadget fused_addsub_cbnz
+    ldr x8, [_pc]
+    add _pc, _pc, #8
+    ldr x9, [_pc]
+    add _pc, _pc, #8
+    ldr x10, [_pc]
+    and x12, x8, #0x1f
+    ubfx x13, x8, #8, #5
+    ubfx x11, x8, #16, #12
+    add x14, _cpu, #CPU_x0
+    ldr x15, [x14, x13, lsl #3]
+    tbnz x8, #29, fused_addsub_cbnz_64
+    tbnz x8, #28, fused_addsub_cbnz_sub32
+    add w16, w15, w11
+    b fused_addsub_cbnz_store
+fused_addsub_cbnz_sub32:
+    sub w16, w15, w11
+    b fused_addsub_cbnz_store
+fused_addsub_cbnz_64:
+    tbnz x8, #28, fused_addsub_cbnz_sub64
+    add x16, x15, x11
+    b fused_addsub_cbnz_store
+fused_addsub_cbnz_sub64:
+    sub x16, x15, x11
+fused_addsub_cbnz_store:
+    str x16, [x14, x12, lsl #3]
+    tbnz x8, #30, fused_addsub_cbnz_test64
+    cbnz w16, fused_addsub_cbnz_taken
+    b fused_addsub_cbnz_not_taken
+fused_addsub_cbnz_test64:
+    cbnz x16, fused_addsub_cbnz_taken
+fused_addsub_cbnz_not_taken:
+    inline_chain x10, fused_addsub_cbnz_nt_unchained
+fused_addsub_cbnz_nt_unchained:
+    and x11, x10, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x10
+    b fiber_ret_chain
+fused_addsub_cbnz_taken:
+    inline_chain x9, fused_addsub_cbnz_t_unchained
+fused_addsub_cbnz_t_unchained:
+    and x11, x9, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x9
+    b fiber_ret_chain
+
+/*
  * Conditional branch (B.cond)
  * Code stream: [gadget addr][cond (64-bit)][fake_target (64-bit)][fake_fallthrough (64-bit)]
  *
@@ -502,6 +707,186 @@ bcond_not_taken:
     // x10 = fallthrough (fake_ip or chained block->code)
     inline_chain x10, bcond_not_taken_unchained
 bcond_not_taken_unchained:
+    and x11, x10, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x10
+    b fiber_ret_chain
+
+/*
+ * Conditional branch with external taken edge and internal fallthrough edge.
+ * Code stream: [gadget addr][cond][fake_target][internal_continue_ptr]
+ *
+ * The taken edge uses the normal external fake-IP/block->code chain path.
+ * The not-taken edge jumps to a private internal-continue record and never
+ * passes the interior pointer to fiber_ret_chain.
+ */
+.gadget bcond_fallthrough_internal
+    ldr x8, [_pc], #8       // cond
+    ldr x9, [_pc], #8       // taken target (fake_ip or chained)
+    ldr x10, [_pc]          // internal_continue record pointer
+
+    and x8, x8, #0xf
+    adr x11, bcond_fallthrough_internal_table
+    add x11, x11, x8, lsl #2
+    load_flags
+    br x11
+
+    .align 2
+bcond_fallthrough_internal_table:
+    b bcond_fi_eq
+    b bcond_fi_ne
+    b bcond_fi_cs
+    b bcond_fi_cc
+    b bcond_fi_mi
+    b bcond_fi_pl
+    b bcond_fi_vs
+    b bcond_fi_vc
+    b bcond_fi_hi
+    b bcond_fi_ls
+    b bcond_fi_ge
+    b bcond_fi_lt
+    b bcond_fi_gt
+    b bcond_fi_le
+    b bcond_fi_taken
+    b bcond_fi_taken
+bcond_fi_eq:
+    b.eq bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_ne:
+    b.ne bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_cs:
+    b.cs bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_cc:
+    b.cc bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_mi:
+    b.mi bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_pl:
+    b.pl bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_vs:
+    b.vs bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_vc:
+    b.vc bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_hi:
+    b.hi bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_ls:
+    b.ls bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_ge:
+    b.ge bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_lt:
+    b.lt bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_gt:
+    b.gt bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_le:
+    b.le bcond_fi_taken
+    b bcond_fi_not_taken
+bcond_fi_taken:
+    inline_chain x9, bcond_fi_taken_unchained
+bcond_fi_taken_unchained:
+    and x11, x9, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x9
+    b fiber_ret_chain
+bcond_fi_not_taken:
+    mov _pc, x10
+    gret
+
+/*
+ * Conditional branch with internal taken edge and external fallthrough edge.
+ * Code stream: [gadget addr][cond][internal_continue_ptr][fake_fallthrough]
+ *
+ * The taken edge jumps to a private internal-continue record and never passes
+ * the interior pointer to fiber_ret_chain. The not-taken edge uses the normal
+ * external fake-IP/block->code chain path.
+ */
+.gadget bcond_taken_internal
+    ldr x8, [_pc], #8       // cond
+    ldr x9, [_pc], #8       // internal_continue record pointer
+    ldr x10, [_pc]          // fallthrough target (fake_ip or chained)
+
+    and x8, x8, #0xf
+    adr x11, bcond_taken_internal_table
+    add x11, x11, x8, lsl #2
+    load_flags
+    br x11
+
+    .align 2
+bcond_taken_internal_table:
+    b bcond_ti_eq
+    b bcond_ti_ne
+    b bcond_ti_cs
+    b bcond_ti_cc
+    b bcond_ti_mi
+    b bcond_ti_pl
+    b bcond_ti_vs
+    b bcond_ti_vc
+    b bcond_ti_hi
+    b bcond_ti_ls
+    b bcond_ti_ge
+    b bcond_ti_lt
+    b bcond_ti_gt
+    b bcond_ti_le
+    b bcond_ti_taken
+    b bcond_ti_taken
+bcond_ti_eq:
+    b.eq bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_ne:
+    b.ne bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_cs:
+    b.cs bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_cc:
+    b.cc bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_mi:
+    b.mi bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_pl:
+    b.pl bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_vs:
+    b.vs bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_vc:
+    b.vc bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_hi:
+    b.hi bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_ls:
+    b.ls bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_ge:
+    b.ge bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_lt:
+    b.lt bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_gt:
+    b.gt bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_le:
+    b.le bcond_ti_taken
+    b bcond_ti_not_taken
+bcond_ti_taken:
+    mov _pc, x9
+    gret
+bcond_ti_not_taken:
+    inline_chain x10, bcond_ti_not_taken_unchained
+bcond_ti_not_taken_unchained:
     and x11, x10, #0xffffffffffff
     str x11, [_cpu, #CPU_pc]
     mov _pc, x10
@@ -736,6 +1121,90 @@ tbnz_nt_unchained:
     str x11, [_cpu, #CPU_pc]
     mov _pc, x10
     b fiber_ret_chain
+
+/*
+ * TBZ/TBNZ with external taken edge and internal fallthrough edge.
+ * Code stream: [gadget addr][rt | bit<<8 | is_tbnz<<14]
+ *              [fake_target][internal_continue_ptr]
+ *
+ * The taken edge uses the normal external fake-IP/block->code chain path.
+ * The not-taken edge jumps to a private internal-continue record and never
+ * passes the interior pointer to fiber_ret_chain.
+ */
+.gadget tbz_fallthrough_internal
+    ldr x8, [_pc], #8       // rt | bit<<8 | is_tbnz<<14
+    ldr x9, [_pc], #8       // taken target (fake_ip or chained)
+    ldr x10, [_pc]          // internal_continue record pointer
+
+    and x11, x8, #0x1f      // rt
+    ubfx x12, x8, #8, #6    // bit position (0-63)
+    ubfx x13, x8, #14, #1   // is_tbnz
+    add x14, _cpu, #CPU_x0
+    cmp x11, #31
+    b.eq tbz_fi_xzr
+    ldr x15, [x14, x11, lsl #3]
+    b tbz_fi_test
+tbz_fi_xzr:
+    mov x15, #0
+tbz_fi_test:
+    mov x16, #1
+    lsl x16, x16, x12
+    tst x15, x16
+    cset w17, ne            // bit set = 1, bit clear = 0
+    cmp w17, w13            // TBNZ takes when set; TBZ takes when clear
+    b.eq tbz_fi_taken
+tbz_fi_not_taken:
+    mov _pc, x10
+    gret
+tbz_fi_taken:
+    inline_chain x9, tbz_fi_taken_unchained
+tbz_fi_taken_unchained:
+    and x11, x9, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x9
+    b fiber_ret_chain
+
+/*
+ * TBZ/TBNZ with internal taken edge and external fallthrough edge.
+ * Code stream: [gadget addr][rt | bit<<8 | is_tbnz<<14]
+ *              [internal_continue_ptr][fake_fallthrough]
+ *
+ * The taken edge jumps to a private internal-continue record and never passes
+ * the interior pointer to fiber_ret_chain. The not-taken edge uses the normal
+ * external fake-IP/block->code chain path.
+ */
+.gadget tbz_taken_internal
+    ldr x8, [_pc], #8       // rt | bit<<8 | is_tbnz<<14
+    ldr x9, [_pc], #8       // internal_continue record pointer
+    ldr x10, [_pc]          // fallthrough target (fake_ip or chained)
+
+    and x11, x8, #0x1f      // rt
+    ubfx x12, x8, #8, #6    // bit position (0-63)
+    ubfx x13, x8, #14, #1   // is_tbnz
+    add x14, _cpu, #CPU_x0
+    cmp x11, #31
+    b.eq tbz_ti_xzr
+    ldr x15, [x14, x11, lsl #3]
+    b tbz_ti_test
+tbz_ti_xzr:
+    mov x15, #0
+tbz_ti_test:
+    mov x16, #1
+    lsl x16, x16, x12
+    tst x15, x16
+    cset w17, ne            // bit set = 1, bit clear = 0
+    cmp w17, w13            // TBNZ takes when set; TBZ takes when clear
+    b.eq tbz_ti_taken
+tbz_ti_not_taken:
+    inline_chain x10, tbz_ti_not_taken_unchained
+tbz_ti_not_taken_unchained:
+    and x11, x10, #0xffffffffffff
+    str x11, [_cpu, #CPU_pc]
+    mov _pc, x10
+    b fiber_ret_chain
+tbz_ti_taken:
+    mov _pc, x9
+    gret
 
 /*
  * CSINC - Conditional Select Increment

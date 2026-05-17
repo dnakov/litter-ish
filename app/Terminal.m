@@ -11,7 +11,6 @@
 #include "LinuxInterop.h"
 #include "fs/devices.h"
 #include "fs/tty.h"
-#include "fs/devices.h"
 
 extern struct tty_driver ios_pty_driver;
 
@@ -39,6 +38,9 @@ typedef struct linux_tty *tty_t;
 @property DelayedUITask *scrollToBottomTask;
 
 @property BOOL applicationCursor;
+@property (nonatomic) NSUInteger windowSizeRequestID;
+@property (nonatomic) int lastWindowCols;
+@property (nonatomic) int lastWindowRows;
 
 @property NSNumber *terminalsKey;
 @property NSUUID *uuid;
@@ -108,9 +110,12 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
         _webView = [[CustomWebView alloc] initWithFrame:webviewSize configuration:config];
         if (@available(macOS 13.3, iOS 16.4, tvOS 16.4, *))
             _webView.inspectable = YES;
+        _webView.layer.drawsAsynchronously = YES;
         _webView.scrollView.scrollEnabled = NO;
         NSURL *xtermHtmlFile = [NSBundle.mainBundle URLForResource:@"term" withExtension:@"html"];
-        [_webView loadFileURL:xtermHtmlFile allowingReadAccessToURL:xtermHtmlFile];
+        // Give WebKit access to the containing bundle directory so the
+        // terminal frontend can load adjacent classic scripts and assets.
+        [_webView loadFileURL:xtermHtmlFile allowingReadAccessToURL:xtermHtmlFile.URLByDeletingLastPathComponent];
     }
     return _webView;
 }
@@ -127,6 +132,9 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
 - (void)setTty:(tty_t)tty {
     @synchronized (self) {
         _tty = tty;
+        _lastWindowCols = 0;
+        _lastWindowRows = 0;
+        _windowSizeRequestID++;
     }
     dispatch_async(dispatch_get_main_queue(), ^{
         [self syncWindowSize];
@@ -135,6 +143,7 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
 
 - (void)userContentController:(WKUserContentController *)userContentController didReceiveScriptMessage:(WKScriptMessage *)message {
     if ([message.name isEqualToString:@"load"]) {
+        NSLog(@"terminal frontend loaded");
         self.loaded = YES;
         [self.refreshTask schedule];
         // make sure this setting works if it's set before loading
@@ -142,28 +151,60 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
     } else if ([message.name isEqualToString:@"log"]) {
         NSLog(@"%@", message.body);
     } else if ([message.name isEqualToString:@"sendInput"]) {
+        if (![message.body isKindOfClass:NSString.class])
+            return;
         NSData *data = [message.body dataUsingEncoding:NSUTF8StringEncoding];
+        if (data == nil)
+            return;
         [self sendInput:data];
     } else if ([message.name isEqualToString:@"resize"]) {
         [self syncWindowSize];
     } else if ([message.name isEqualToString:@"propUpdate"]) {
-        [self setValue:message.body[1] forKey:message.body[0]];
+        if (![message.body isKindOfClass:NSArray.class])
+            return;
+        NSArray *body = message.body;
+        if (body.count != 2 || ![body[0] isKindOfClass:NSString.class])
+            return;
+        NSString *property = body[0];
+        if ([property isEqualToString:@"applicationCursor"] && [body[1] isKindOfClass:NSNumber.class])
+            self.applicationCursor = [body[1] boolValue];
     }
 }
 
 - (void)syncWindowSize {
+    NSUInteger requestID;
+    @synchronized (self) {
+        requestID = ++_windowSizeRequestID;
+    }
     [self.webView evaluateJavaScript:@"exports.getSize()" completionHandler:^(NSArray<NSNumber *> *dimensions, NSError *error) {
+        if (error != nil || ![dimensions isKindOfClass:NSArray.class] || dimensions.count < 2 ||
+            ![dimensions[0] isKindOfClass:NSNumber.class] || ![dimensions[1] isKindOfClass:NSNumber.class])
+            return;
         int cols = dimensions[0].intValue;
         int rows = dimensions[1].intValue;
-        if (self.tty == NULL)
-            return;
+        tty_t tty;
+        @synchronized (self) {
+            if (requestID != self->_windowSizeRequestID)
+                return;
+            tty = self->_tty;
+            if (cols <= 0 || rows <= 0 || tty == NULL)
+                return;
+            if (cols == self->_lastWindowCols && rows == self->_lastWindowRows)
+                return;
+            self->_lastWindowCols = cols;
+            self->_lastWindowRows = rows;
+        }
 #if !ISH_LINUX
-        lock(&self.tty->lock);
-        tty_set_winsize(self.tty, (struct winsize_) {.col = cols, .row = rows});
-        unlock(&self.tty->lock);
+        lock(&tty->lock);
+        tty_set_winsize(tty, (struct winsize_) {.col = cols, .row = rows});
+        unlock(&tty->lock);
 #else
         async_do_in_workqueue(^{
-            self->_tty->ops->resize(self->_tty, cols, rows);
+            @synchronized (self) {
+                if (self->_tty != tty)
+                    return;
+                tty->ops->resize(tty, cols, rows);
+            }
         });
 #endif
     }];
@@ -171,7 +212,7 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
 
 - (void)setEnableVoiceOverAnnounce:(BOOL)enableVoiceOverAnnounce {
     _enableVoiceOverAnnounce = enableVoiceOverAnnounce;
-    [self.webView evaluateJavaScript:[NSString stringWithFormat:@"term.setAccessibilityEnabled(%@)",
+    [self.webView evaluateJavaScript:[NSString stringWithFormat:@"exports.setAccessibilityEnabled(%@)",
                                       enableVoiceOverAnnounce ? @"true" : @"false"]
                    completionHandler:nil];
 }
@@ -213,14 +254,22 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
 #endif
 
 - (void)sendInput:(NSData *)input {
-    if (self.tty == NULL)
+    tty_t tty;
+    @synchronized (self) {
+        tty = self->_tty;
+    }
+    if (tty == NULL || input == nil)
         return;
 #if !ISH_LINUX
-    tty_input(self.tty, input.bytes, input.length, 0);
+    tty_input(tty, input.bytes, input.length, 0);
 #else
     async_do_in_workqueue(^{
         NSData *inputRef = input;
-        self.tty->ops->send_input(self.tty, inputRef.bytes, inputRef.length);
+        @synchronized (self) {
+            if (self->_tty != tty)
+                return;
+            tty->ops->send_input(tty, inputRef.bytes, inputRef.length);
+        }
     });
 #endif
     [self.webView evaluateJavaScript:@"exports.setUserGesture()" completionHandler:nil];
@@ -261,20 +310,22 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
         data = _pendingData;
         _pendingData = [[NSMutableData alloc] initWithCapacity:BUF_SIZE];
         _outputInProgress = YES;
-        if (self->_tty)
+        tty_t tty = self->_tty;
+        if (tty != NULL)
             async_do_in_irq(^{
-                self->_tty->ops->can_output(self->_tty);
+                @synchronized (self) {
+                    if (self->_tty != tty)
+                        return;
+                    tty->ops->can_output(tty);
+                }
             });
     }
 #endif
 
     NSString *dataString = [[NSString alloc] initWithBytes:data.bytes length:data.length encoding:NSISOLatin1StringEncoding];
-    // escape for javascript. only have to worry about the first 256 codepoints, because of the latin-1 encoding.
-    dataString = [dataString stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
-    dataString = [dataString stringByReplacingOccurrencesOfString:@"\r" withString:@"\\r"];
-    dataString = [dataString stringByReplacingOccurrencesOfString:@"\n" withString:@"\\n"];
-    dataString = [dataString stringByReplacingOccurrencesOfString:@"\"" withString:@"\\\""];
-    NSString *jsToEvaluate = [NSString stringWithFormat:@"exports.write(\"%@\")", dataString];
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:@[dataString ?: @""] options:0 error:nil];
+    NSString *jsonArgs = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+    NSString *jsToEvaluate = [NSString stringWithFormat:@"exports.write.apply(null, %@)", jsonArgs ?: @"[\"\"]"];
     [self.webView evaluateJavaScript:jsToEvaluate completionHandler:^(id result, NSError *error) {
 #if !ISH_LINUX
         lock(&self->_dataLock);

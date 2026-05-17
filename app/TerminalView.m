@@ -11,6 +11,8 @@
 #import "UIApplication+OpenURL.h"
 #import "NSObject+SaneKVO.h"
 
+#include <math.h>
+
 struct rowcol {
     int row;
     int col;
@@ -104,13 +106,13 @@ static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight",
     }
 
     _terminal = terminal;
+    if (_terminal == nil)
+        return;
     [_terminal addObserver:self forKeyPath:@"loaded" options:NSKeyValueObservingOptionInitial context:nil];
-    if (_terminal.loaded)
-        [self installTerminalView];
+    [self installTerminalView];
 }
 
 - (void)installTerminalView {
-    NSAssert(_terminal.loaded, @"should probably not be installing a non-loaded terminal");
     UIView *superview = self.terminal.webView.superview;
     if (superview != nil) {
         NSAssert(superview == self.scrollbarView, @"installing terminal that is already installed elsewhere");
@@ -118,7 +120,8 @@ static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight",
     }
 
     WKWebView *webView = _terminal.webView;
-    _terminal.enableVoiceOverAnnounce = YES;
+    if (_terminal.loaded)
+        _terminal.enableVoiceOverAnnounce = YES;
     webView.scrollView.scrollEnabled = NO;
     webView.scrollView.delaysContentTouches = NO;
     webView.scrollView.canCancelContentTouches = NO;
@@ -156,24 +159,28 @@ static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight",
 
 - (void)_updateStyle {
     NSAssert(NSThread.isMainThread, @"This method needs to be called on the main thread");
-    if (!self.terminal.loaded)
-        return;
     UserPreferences *prefs = [UserPreferences shared];
-    if (_overrideFontSize == prefs.fontSize.doubleValue)
-        _overrideFontSize = 0;
     Palette *palette = prefs.palette;
     if (self.overrideAppearance != OverrideAppearanceNone) {
         palette = self.overrideAppearance == OverrideAppearanceLight ? prefs.theme.lightPalette : prefs.theme.darkPalette;
     }
+    UIColor *backgroundColor = [[UIColor alloc] ish_initWithHexString:palette.backgroundColor];
+    self.backgroundColor = backgroundColor;
+    self.scrollbarView.backgroundColor = backgroundColor;
+    if (!self.terminal.loaded)
+        return;
+    if (_overrideFontSize == prefs.fontSize.doubleValue)
+        _overrideFontSize = 0;
     NSMutableDictionary<NSString *, id> *themeInfo = [@{
         @"fontFamily": prefs.fontFamily,
         @"fontSize": @(self.effectiveFontSize),
         @"foregroundColor": palette.foregroundColor,
         @"backgroundColor": palette.backgroundColor,
+        @"cursorColor": palette.cursorColor ?: palette.foregroundColor,
         @"blinkCursor": @(prefs.blinkCursor),
         @"cursorShape": prefs.htermCursorShape,
     } mutableCopy];
-    if (prefs.palette.colorPaletteOverrides) {
+    if (palette.colorPaletteOverrides) {
         themeInfo[@"colorPaletteOverrides"] = palette.colorPaletteOverrides;
     }
     NSString *json = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:themeInfo options:0 error:nil] encoding:NSUTF8StringEncoding];
@@ -256,14 +263,22 @@ static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight",
             [self becomeFirstResponder];
         }
     } else if ([message.name isEqualToString:@"newScrollHeight"]) {
-        self.scrollbarView.contentSize = CGSizeMake(0, [message.body doubleValue]);
+        if (![message.body isKindOfClass:NSNumber.class])
+            return;
+        CGFloat newHeight = [message.body doubleValue];
+        if (!isfinite(newHeight) || newHeight < 0)
+            return;
+        self.scrollbarView.contentSize = CGSizeMake(0, newHeight);
     } else if ([message.name isEqualToString:@"newScrollTop"]) {
+        if (![message.body isKindOfClass:NSNumber.class])
+            return;
         CGFloat newOffset = [message.body doubleValue];
-        if (self.scrollbarView.contentOffset.y == newOffset)
+        if (!isfinite(newOffset) || newOffset < 0 || self.scrollbarView.contentOffset.y == newOffset)
             return;
         [self.scrollbarView setContentOffset:CGPointMake(0, newOffset) animated:NO];
     } else if ([message.name isEqualToString:@"openLink"]) {
-        [UIApplication openURL:message.body];
+        if ([message.body isKindOfClass:NSString.class])
+            [UIApplication openURL:message.body];
     }
 }
 
@@ -388,7 +403,12 @@ static NSString *const HANDLERS[] = {@"syncFocus", @"focus", @"newScrollHeight",
             NSLog(@"error getting character size: %@", error);
             return;
         }
+        if (![charSizeRaw isKindOfClass:NSArray.class] || charSizeRaw.count < 2 ||
+            ![charSizeRaw[0] isKindOfClass:NSNumber.class] || ![charSizeRaw[1] isKindOfClass:NSNumber.class])
+            return;
         CGSize charSize = CGSizeMake([charSizeRaw[0] doubleValue], [charSizeRaw[1] doubleValue]);
+        if (!isfinite(charSize.width) || !isfinite(charSize.height) || charSize.width <= 0 || charSize.height <= 0)
+            return;
         double sensitivity = 0.5;
         self.floatingCursorSensitivity = CGSizeMake(charSize.width / sensitivity, charSize.height / sensitivity);
     }];

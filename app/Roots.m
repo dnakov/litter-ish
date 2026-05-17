@@ -186,7 +186,7 @@ void root_progress_callback(void *cookie, double progress, const char *message, 
 
 - (BOOL)destroyRootNamed:(NSString *)name error:(NSError **)error {
     if ([name isEqualToString:self.defaultRoot]) {
-        *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Cannot delete the default filesystem"}];
+        *error = [NSError errorWithDomain:@"ios-linuxkit" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Cannot delete the default filesystem"}];
         return NO;
     }
     NSAssert([self.roots containsObject:name], @"root does not exist: %@", name);
@@ -198,19 +198,19 @@ void root_progress_callback(void *cookie, double progress, const char *message, 
 
 - (BOOL)renameRoot:(NSString *)name toName:(NSString *)newName error:(NSError **)error {
     if (name.length == 0) {
-        *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't be empty"}];
+        *error = [NSError errorWithDomain:@"ios-linuxkit" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't be empty"}];
         return NO;
     }
     if ([name containsString:@"/"]) {
-        *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't contain /"}];
+        *error = [NSError errorWithDomain:@"ios-linuxkit" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't contain /"}];
         return NO;
     }
     if ([name isEqualToString:@"."] || [name isEqualToString:@".."]) {
-        *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't be . or .."}];
+        *error = [NSError errorWithDomain:@"ios-linuxkit" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't be . or .."}];
         return NO;
     }
     if ([name isEqualToString:self.defaultRoot]) {
-        *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Cannot rename the default filesystem"}];
+        *error = [NSError errorWithDomain:@"ios-linuxkit" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Cannot rename the default filesystem"}];
         return NO;
     }
     NSAssert([self.roots containsObject:name], @"root does not exist: %@", name);

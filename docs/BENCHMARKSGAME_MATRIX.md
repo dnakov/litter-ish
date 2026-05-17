@@ -1,4 +1,4 @@
-# Benchmarks Game ARM64 iSH success matrix
+# Benchmarks Game ios-linuxkit ARM64 success matrix
 
 Generated: 2026-05-13T07:45:44+00:00
 
@@ -33,11 +33,11 @@ Legend:
 | Language | Tier | Variants | binarytrees | fannkuchredux | fasta | knucleotide | mandelbrot | nbody | pidigits | regexredux | revcomp | spectralnorm | Toolchain note |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | chapel | blocked | 23 | X | X | X | X | X | X | X | X | X | X | no Alpine aarch64 package found |
-| csharpaot | partial/external | 54 | P | P | P | P | P | P | P | P | P | P | dotnet packages exist; NativeAOT not verified |
+| csharpaot | partial/external | 54 | P | P | P | P | P | P | P | P | P | P | dotnet9/10 AOT SDKs installed; NativeAOT publish/run not yet verified (current probe stalls in Roslyn csc after restore) |
 | dartexe | blocked | 43 | X | X | X | X | X | X | X | X | X | X | no Dart SDK package found |
 | erlang | ready-large | 21 | L | L | L | L | L | L | L | L | L | L | erlang27 available; BEAM startup smoke passes, full row not yet run |
 | fpascal | blocked | 23 | X | X | X | — | X | X | X | X | X | X | no Free Pascal package found |
-| fsharpcore | partial/external | 35 | P | P | P | P | P | P | P | P | P | P | dotnet packages exist; F# SDK/workload not verified |
+| fsharpcore | partial/external | 35 | P | P | P | P | P | P | P | P | P | P | dotnet SDK packages installed; F# SDK/workload not verified |
 | gcc | ready | 56 | R | R | R | R | R | R | R | R | R | R | gcc |
 | ghc | ready-large | 38 | L | L | L | L | L | L | L | L | L | L | ghc |
 | gnat | ready | 23 | R | R | R | R | R | R | R | R | R | R | gcc-gnat |

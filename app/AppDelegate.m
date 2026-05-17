@@ -28,7 +28,7 @@
 #include "fs/dyndev.h"
 #include "fs/devices.h"
 #include "fs/path.h"
-#if defined(GUEST_ARM64) && __has_include("DebugServer.h")
+#if !ISH_LINUX && defined(GUEST_ARM64) && __has_include("DebugServer.h")
 #include "DebugServer.h"
 #define ISH_HAS_DEBUG_SERVER 1
 #else
@@ -77,7 +77,6 @@ void ReportPanic(const char *message) {
 #endif
 
 static int bootError;
-static NSString *const kSkipStartupMessage = @"Skip Startup Message";
 
 @implementation AppDelegate
 
@@ -126,6 +125,7 @@ static NSString *const kSkipStartupMessage = @"Skip Startup Message";
     generic_mknodat(AT_PWD, "/dev/urandom", S_IFCHR|0666, dev_make(MEM_MAJOR, DEV_URANDOM_MINOR));
     
     generic_mkdirat(AT_PWD, "/dev/pts", 0755);
+    generic_mkdirat(AT_PWD, "/mnt", 0755);
     
     // Permissions on / have been broken for a while, let's fix them
     generic_setattrat(AT_PWD, "/", (struct attr) {.type = attr_mode, .mode = 0755}, false);
@@ -257,26 +257,6 @@ void SyncHostname(void) {
     return bootError;
 }
 
-+ (void)maybePresentStartupMessageOnViewController:(UIViewController *)vc {
-    if ([NSUserDefaults.standardUserDefaults integerForKey:kSkipStartupMessage] >= 1)
-        return;
-    if (!FsIsManaged()) {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Install iSH’s built-in APK?"
-                                                                       message:@"iSH now includes the APK package manager, but it must be manually activated."
-                                                                preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Show me how"
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction * _Nonnull action) {
-            [UIApplication openURL:@"https://go.ish.app/get-apk"];
-        }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Don't show again"
-                                                  style:UIAlertActionStyleDefault
-                                                handler:nil]];
-        [vc presentViewController:alert animated:YES completion:nil];
-    }
-    [NSUserDefaults.standardUserDefaults setInteger:1 forKey:kSkipStartupMessage];
-}
-
 - (BOOL)application:(UIApplication *)application willFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey,id> *)launchOptions {
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if ([defaults boolForKey:@"hail mary"]) {
@@ -312,7 +292,7 @@ void NetworkReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReach
         [UIView setAnimationsEnabled:NO];
 
 #if !ISH_LINUX
-    NSString *ishVersion = [NSString stringWithFormat:@"iSH %@ (%@)",
+    NSString *ishVersion = [NSString stringWithFormat:@"ios-linuxkit %@ (%@)",
                          [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],
                          [NSBundle.mainBundle objectForInfoDictionaryKey:(NSString *) kCFBundleVersionKey]];
     extern const char *proc_ish_version;

@@ -349,7 +349,16 @@ globalThis.WebAssembly = {
     if (importObj && importObj.env) {
       envCallbacks = importObj.env;
     }
-    return { exports: wasmExports };
+    const instance = { exports: wasmExports };
+    // Spec compatibility:
+    // - instantiate(bufferSource, imports) resolves to { module, instance }
+    // - instantiate(module, imports) resolves to instance
+    // Some bundled CLIs use the first form and expect `.instance.exports`,
+    // while undici/llhttp-style callers use compile()+instantiate() and expect
+    // `.exports` directly. Preserve both paths for the fake module token.
+    if (mod === fakeModule)
+      return instance;
+    return { module: fakeModule, instance };
   },
   Module: function() {},
   Instance: function() {},

@@ -1157,16 +1157,34 @@ dword_t sys_fchmod(fd_t f, dword_t mode) {
     return generic_fsetattr(fd, make_attr(mode, mode));
 }
 
-dword_t sys_fchmodat(fd_t at_f, addr_t path_addr, dword_t mode) {
+static dword_t do_fchmodat(fd_t at_f, addr_t path_addr, dword_t mode, dword_t flags) {
     char path[MAX_PATH];
     if (user_read_string(path_addr, path, sizeof(path)))
         return _EFAULT;
-    STRACE("fchmodat(%d, \"%s\", %o)", at_f, path, mode);
+    STRACE("fchmodat(%d, \"%s\", %o, %#x)", at_f, path, mode, flags);
+    if (flags & ~(AT_SYMLINK_NOFOLLOW_ | AT_EMPTY_PATH_))
+        return _EINVAL;
+    mode &= ~S_IFMT;
+    if ((flags & AT_EMPTY_PATH_) && path[0] == '\0') {
+        if (at_f == AT_FDCWD_)
+            return generic_setattrat(AT_PWD, ".", make_attr(mode, mode), true);
+        struct fd *fd = f_get(at_f);
+        if (fd == NULL)
+            return _EBADF;
+        return generic_fsetattr(fd, make_attr(mode, mode));
+    }
     struct fd *at = at_fd(at_f);
     if (at == NULL)
         return _EBADF;
-    mode &= ~S_IFMT;
-    return generic_setattrat(at, path, make_attr(mode, mode), true);
+    return generic_setattrat(at, path, make_attr(mode, mode), !(flags & AT_SYMLINK_NOFOLLOW_));
+}
+
+dword_t sys_fchmodat(fd_t at_f, addr_t path_addr, dword_t mode) {
+    return do_fchmodat(at_f, path_addr, mode, 0);
+}
+
+dword_t sys_fchmodat2(fd_t at_f, addr_t path_addr, dword_t mode, dword_t flags) {
+    return do_fchmodat(at_f, path_addr, mode, flags);
 }
 
 dword_t sys_chmod(addr_t path_addr, dword_t mode) {

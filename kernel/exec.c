@@ -883,6 +883,16 @@ dword_t sys_execve(addr_t filename_addr, addr_t argv_addr, addr_t envp_addr) {
         const char *base = strrchr(filename, '/');
         base = base ? base + 1 : filename;
         if (strcmp(base, "node") == 0) {
+            bool skip_node_arg_injection = false;
+            for (char *e = envp; *e != '\0'; e += strlen(e) + 1) {
+                if (strcmp(e, "ISH_NODE_NO_ARG_INJECTION=1") == 0) {
+                    skip_node_arg_injection = true;
+                    break;
+                }
+            }
+            if (skip_node_arg_injection)
+                goto node_arg_injection_done;
+
             static const char *inject_args_base[] = {
                 "--jitless",
                 "--no-lazy",
@@ -932,6 +942,7 @@ dword_t sys_execve(addr_t filename_addr, addr_t argv_addr, addr_t envp_addr) {
                     argc++;
                 }
             }
+node_arg_injection_done: ;
         }
 
         // Inject LD_PRELOAD for zero_malloc.so to zero large malloc/free.
@@ -939,24 +950,28 @@ dword_t sys_execve(addr_t filename_addr, addr_t argv_addr, addr_t envp_addr) {
         // stale pointer dereferences. This library zeros blocks >= 4096 bytes
         // on both malloc and free (Zone segments are >= 8KB).
         if (strcmp(base, "node") == 0) {
-            static const char *ld_preload = "LD_PRELOAD=/lib/zero_free.so";
-            size_t env_len = strlen(ld_preload) + 1;
+            struct fd *zero_free_fd = generic_open("/lib/zero_free.so", O_RDONLY_, 0);
+            if (!IS_ERR(zero_free_fd)) {
+                fd_close(zero_free_fd);
+                static const char *ld_preload = "LD_PRELOAD=/lib/zero_free.so";
+                size_t env_len = strlen(ld_preload) + 1;
 
-            // Check if LD_PRELOAD is already set
-            bool found = false;
-            char *q = envp;
-            while (*q != '\0') {
-                if (strncmp(q, "LD_PRELOAD=", 11) == 0) { found = true; break; }
-                q += strlen(q) + 1;
-            }
-            if (!found) {
-                char *p = envp;
-                while (*p != '\0')
-                    p += strlen(p) + 1;
-                size_t total_used = (p - envp) + 1;
-                if (total_used + env_len + 1 <= ARGV_MAX) {
-                    memcpy(p, ld_preload, env_len);
-                    p[env_len] = '\0';
+                // Check if LD_PRELOAD is already set
+                bool found = false;
+                char *q = envp;
+                while (*q != '\0') {
+                    if (strncmp(q, "LD_PRELOAD=", 11) == 0) { found = true; break; }
+                    q += strlen(q) + 1;
+                }
+                if (!found) {
+                    char *p = envp;
+                    while (*p != '\0')
+                        p += strlen(p) + 1;
+                    size_t total_used = (p - envp) + 1;
+                    if (total_used + env_len + 1 <= ARGV_MAX) {
+                        memcpy(p, ld_preload, env_len);
+                        p[env_len] = '\0';
+                    }
                 }
             }
         }

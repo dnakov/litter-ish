@@ -40,6 +40,11 @@ static bool exit_tgroup(struct task *task) {
 
 void (*exit_hook)(struct task *task, int code) = NULL;
 
+#ifdef GUEST_ARM64
+extern void arm64_fusion_stats_dump_if_enabled(void);
+extern void arm64_block_stats_dump_if_enabled(void);
+#endif
+
 static struct task *find_new_parent(struct task *task) {
     struct task *new_parent;
     list_for_each_entry(&task->group->threads, new_parent, group_links) {
@@ -50,6 +55,10 @@ static struct task *find_new_parent(struct task *task) {
 }
 
 noreturn void do_exit(int status) {
+#ifdef GUEST_ARM64
+    arm64_fusion_stats_dump_if_enabled();
+    arm64_block_stats_dump_if_enabled();
+#endif
     // If this thread was already marked as leaked by the safety valve,
     // the group leader has finished exiting and the group struct may be
     // freed. Don't touch any shared state — just kill the host thread.

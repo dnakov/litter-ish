@@ -22,13 +22,13 @@ git status --short --branch
 make build-arm64-linux-all
 ```
 
-The canonical push target used during this work is:
+The canonical push target used during this work is now:
 
 ```bash
-git push https://github.com/rcarmo/ish-arm64.git master
+git push https://github.com/rcarmo/ios-linuxkit.git master
 ```
 
-Local `origin` may still point at `OpenMinis/ish-arm64`, so an `ahead` status is expected.
+Local `origin` should point at `rcarmo/ios-linuxkit`; if it does not, inspect remotes before pushing.
 
 ## Reproducer
 

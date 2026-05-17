@@ -76,6 +76,14 @@ struct cmsghdr_ {
     int_t type;
     uint8_t data[];
 };
+#ifdef GUEST_ARM64
+struct cmsghdr64_ {
+    uint64_t len;
+    int32_t level;
+    int32_t type;
+    uint8_t data[];
+};
+#endif
 #define SCM_RIGHTS_ 1
 // copied and ported from musl
 #define CMSG_LEN_(cmsg) (((cmsg)->len + sizeof(dword_t) - 1) & ~(dword_t)(sizeof(dword_t) - 1))
@@ -83,6 +91,13 @@ struct cmsghdr_ {
 #define CMSG_NXTHDR_(cmsg, mhdr_end) ((cmsg)->len < sizeof (struct cmsghdr_) || \
         CMSG_LEN_(cmsg) + sizeof(struct cmsghdr_) >= (size_t) (mhdr_end - (uint8_t *)(cmsg)) \
         ? NULL : (struct cmsghdr_ *)CMSG_NEXT_(cmsg))
+#ifdef GUEST_ARM64
+#define CMSG_LEN64_(cmsg) (((cmsg)->len + sizeof(uint64_t) - 1) & ~(uint64_t)(sizeof(uint64_t) - 1))
+#define CMSG_NEXT64_(cmsg) ((uint8_t *)(cmsg) + CMSG_LEN64_(cmsg))
+#define CMSG_NXTHDR64_(cmsg, mhdr_end) ((cmsg)->len < sizeof (struct cmsghdr64_) || \
+        CMSG_LEN64_(cmsg) + sizeof(struct cmsghdr64_) >= (size_t) (mhdr_end - (uint8_t *)(cmsg)) \
+        ? NULL : (struct cmsghdr64_ *)CMSG_NEXT64_(cmsg))
+#endif
 
 struct scm {
     struct list queue;

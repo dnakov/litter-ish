@@ -1,11 +1,73 @@
+@font-face {
+    font-family: 'JetBrainsMono Nerd Font Mono';
+    src: url('JetBrainsMonoNerdFontMono-Regular.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+}
+
+@font-face {
+    font-family: 'JetBrainsMono Nerd Font Mono';
+    src: url('JetBrainsMonoNerdFontMono-Bold.ttf') format('truetype');
+    font-weight: 700;
+    font-style: normal;
+    font-display: block;
+}
+
+@font-face {
+    font-family: 'FiraCode Nerd Font Mono';
+    src: url('FiraCodeNerdFontMono-Regular.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: block;
+}
+
+@font-face {
+    font-family: 'FiraCode Nerd Font Mono';
+    src: url('FiraCodeNerdFontMono-Bold.ttf') format('truetype');
+    font-weight: 700;
+    font-style: normal;
+    font-display: block;
+}
+
+html,
 body {
     margin: 0;
+    width: 100%;
+    height: 100%;
     background: transparent;
     overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 #terminal {
     position: absolute;
-    top: 0; bottom: 0;
-    left: 0; right: 0;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    overflow: hidden;
+    background: transparent;
+    outline: none;
+    text-rendering: optimizeLegibility;
+    font-variant-ligatures: normal;
+    -webkit-font-smoothing: antialiased;
+    contain: strict;
+    transform: translateZ(0);
+    will-change: transform;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+#terminal canvas {
+    display: block;
+    transform: translateZ(0);
+    will-change: transform;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
 }
