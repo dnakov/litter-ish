@@ -22,6 +22,7 @@ mod session;
 
 pub use error::IshError;
 pub use instance::{IshInstance, SpawnOpts};
+pub use ish_embed_protocol::PtySize;
 pub use session::{
     IshSession, OutputChunk, ReadOutput, SessionEvent, SessionId, Stream, WriteStatus,
 };

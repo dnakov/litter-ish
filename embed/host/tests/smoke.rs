@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use ish_embed_host::{IshInstance, SpawnOpts};
+use ish_embed_host::{IshInstance, IshSession, PtySize, SessionEvent, SpawnOpts, WriteStatus};
 
 static INSTANCE: OnceLock<&'static IshInstance> = OnceLock::new();
 
@@ -161,6 +161,32 @@ async fn drain(session: &ish_embed_host::IshSession, total_ms: u64) -> (Option<i
     }
 }
 
+async fn wait_opened(session: &IshSession, total_ms: u64) -> Result<(), String> {
+    let mut events = session.subscribe();
+    let deadline = std::time::Instant::now() + Duration::from_millis(total_ms);
+    loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return Err("timed out waiting for Opened".to_string());
+        }
+        let remaining = deadline - now;
+        match tokio::time::timeout(remaining, events.recv()).await {
+            Ok(Ok(SessionEvent::Opened { .. })) => return Ok(()),
+            Ok(Ok(SessionEvent::Failed { message })) => return Err(message),
+            Ok(Ok(SessionEvent::Exited { exit_code, .. })) => {
+                return Err(format!("exited before Opened with code {exit_code}"));
+            }
+            Ok(Ok(SessionEvent::Closed)) => return Err("closed before Opened".to_string()),
+            Ok(Ok(SessionEvent::Output { .. })) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                return Err("event stream closed before Opened".to_string());
+            }
+            Err(_) => return Err("timed out waiting for Opened".to_string()),
+        }
+    }
+}
+
 ish_test!(false_returns_nonzero, |ish| {
     let session = ish.spawn(SpawnOpts::cmd(["/bin/false"])).expect("spawn");
     // Drain to completion.
@@ -197,6 +223,7 @@ ish_test!(stdin_pipe_roundtrip, |ish| {
             envp: None,
             cwd: None,
             tty: false,
+            size: None,
             pipe_stdin: true,
             arg0: None,
         })
@@ -221,6 +248,33 @@ ish_test!(stdin_pipe_roundtrip, |ish| {
     assert!(
         combined.contains("ping"),
         "expected 'ping' in output, got: {combined:?}"
+    );
+});
+
+ish_test!(tty_resize_updates_stty_size, |ish| {
+    let session = ish
+        .spawn_pty(
+            &["/bin/sh".into(), "-i".into()],
+            &std::collections::HashMap::new(),
+            std::path::Path::new("/"),
+            PtySize { cols: 80, rows: 24 },
+        )
+        .expect("spawn tty");
+    wait_opened(&session, 2_000).await.expect("tty opened");
+    session.resize(111, 33).await.expect("resize tty");
+    assert_eq!(
+        session
+            .write(b"stty size\nexit\n")
+            .await
+            .expect("write stty command"),
+        WriteStatus::Accepted
+    );
+    let (code, output) = drain(&session, 3_000).await;
+    let text = String::from_utf8_lossy(&output);
+    assert_eq!(code, Some(0), "stty should exit 0; output={text:?}");
+    assert!(
+        text.contains("33 111"),
+        "expected resized rows/cols in stty output, got {text:?}"
     );
 });
 

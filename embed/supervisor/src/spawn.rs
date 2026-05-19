@@ -3,7 +3,7 @@
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
-use ish_embed_protocol::{SpawnOpts, Stream};
+use ish_embed_protocol::{PtySize, SpawnOpts, Stream};
 
 use crate::session::Session;
 
@@ -76,7 +76,7 @@ pub fn spawn(reqid: u32, opts: SpawnOpts) -> Result<OpenedSession, SpawnError> {
 
     // Create stdio plumbing.
     let (stream, parent_out, child_stdout, parent_stdin_w, child_stdin_r) = if opts.tty {
-        let (master, slave) = openpty()?;
+        let (master, slave) = openpty(opts.size)?;
         // For tty sessions both stdin and stdout flow through the master fd.
         (Stream::Pty, master, slave, None, None)
     } else {
@@ -230,16 +230,25 @@ fn pipe2_cloexec() -> Result<(OwnedFd, OwnedFd), SpawnError> {
     Ok((r, w))
 }
 
-fn openpty() -> Result<(OwnedFd, OwnedFd), SpawnError> {
+fn openpty(size: Option<PtySize>) -> Result<(OwnedFd, OwnedFd), SpawnError> {
     let mut master = -1i32;
     let mut slave = -1i32;
+    let mut winsize = size.map(|size| libc::winsize {
+        ws_row: size.rows,
+        ws_col: size.cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    });
     let rc = unsafe {
         libc::openpty(
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            winsize
+                .as_mut()
+                .map(|ws| ws as *mut libc::winsize)
+                .unwrap_or(std::ptr::null_mut()),
         )
     };
     if rc < 0 {

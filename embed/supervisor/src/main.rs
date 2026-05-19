@@ -341,6 +341,18 @@ fn handle_request(
                 written += n as usize;
             }
         }
+        HostToSupervisor::Resize { reqid, size } => {
+            let Some(s) = sessions.get(&reqid) else {
+                return Ok(()); // unknown reqid; silently drop
+            };
+            if let Err(e) = s.resize_pty(size) {
+                write_frame(&SupervisorToHost::Err {
+                    reqid: Some(reqid),
+                    code: e.raw_os_error().unwrap_or(libc::EIO) as u32,
+                    msg: format!("resize pty: {e}"),
+                })?;
+            }
+        }
         HostToSupervisor::Signal { reqid, signum } => {
             if let Some(s) = sessions.get(&reqid) {
                 unsafe {

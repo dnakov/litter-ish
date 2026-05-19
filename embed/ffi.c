@@ -10,7 +10,10 @@
 #include "kernel/fs.h"
 #include "kernel/init.h"
 #include "kernel/task.h"
+#include "fs/dev.h"
+#include "fs/devices.h"
 #include "fs/fd.h"
+#include "fs/path.h"
 
 extern void (*exit_hook)(struct task *task, int code);
 
@@ -43,6 +46,9 @@ int ish_ffi_mount_procfs(void) {
 int ish_ffi_mount_devpts(void) {
     if (current == NULL)
         return -EINVAL;
+    generic_mknodat(AT_PWD, "/dev/ptmx", S_IFCHR|0666,
+                    dev_make(TTY_ALTERNATE_MAJOR, DEV_PTMX_MINOR));
+    generic_mkdirat(AT_PWD, "/dev/pts", 0755);
     return do_mount(&devptsfs, "devpts", "/dev/pts", "", 0);
 }
 

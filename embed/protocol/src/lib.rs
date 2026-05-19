@@ -17,7 +17,7 @@ use alloc::{string::String, vec::Vec};
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any breaking change to the wire enums below.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Maximum bytes of postcard payload we'll accept in one frame. Output
 /// chunks are capped well below this in the supervisor; this is just a
@@ -26,14 +26,22 @@ pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnOpts {
-    pub argv:       Vec<String>,
+    pub argv: Vec<String>,
     /// `None` means "inherit init's environment" (which is the env the host
     /// passed when execve'ing the supervisor).
-    pub envp:       Option<Vec<(String, String)>>,
-    pub cwd:        Option<String>,
-    pub tty:        bool,
+    pub envp: Option<Vec<(String, String)>>,
+    pub cwd: Option<String>,
+    pub tty: bool,
+    /// Initial PTY window size. Ignored unless `tty` is true.
+    pub size: Option<PtySize>,
     pub pipe_stdin: bool,
-    pub arg0:       Option<String>,
+    pub arg0: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PtySize {
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,12 +55,28 @@ pub enum Stream {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HostToSupervisor {
-    Open     { reqid: u32, opts: SpawnOpts },
-    Write    { reqid: u32, bytes: Vec<u8> },
+    Open {
+        reqid: u32,
+        opts: SpawnOpts,
+    },
+    Write {
+        reqid: u32,
+        bytes: Vec<u8>,
+    },
+    /// Resize a tty session's PTY. No-op for pipe-backed sessions.
+    Resize {
+        reqid: u32,
+        size: PtySize,
+    },
     /// Send any signal to the session's process group.
-    Signal   { reqid: u32, signum: i32 },
+    Signal {
+        reqid: u32,
+        signum: i32,
+    },
     /// SIGKILL the pgid and reap. Idempotent.
-    Term     { reqid: u32 },
+    Term {
+        reqid: u32,
+    },
     /// Tear down all sessions, then `_exit(0)` so iSH's halt_system fires.
     Shutdown,
 }
@@ -60,21 +84,34 @@ pub enum HostToSupervisor {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SupervisorToHost {
     /// Sent once, immediately after the supervisor finishes its own setup.
-    Ready    { protocol_version: u32 },
+    Ready { protocol_version: u32 },
     /// Sent once per session, after a successful fork+execve.
-    Opened   { reqid: u32, pid: i32 },
+    Opened { reqid: u32, pid: i32 },
     /// One chunk of merged child output. `seq` is monotonic per session,
     /// starts at 1 on the first chunk.
-    Output   { reqid: u32, seq: u64, stream: Stream, bytes: Vec<u8> },
+    Output {
+        reqid: u32,
+        seq: u64,
+        stream: Stream,
+        bytes: Vec<u8>,
+    },
     /// Child process has been reaped. May still be followed by trailing
     /// `Output` frames if there were buffered bytes; the *final* event for
     /// a session is always `Closed`.
-    Exited   { reqid: u32, exit_code: i32, term_signal: i32 },
+    Exited {
+        reqid: u32,
+        exit_code: i32,
+        term_signal: i32,
+    },
     /// All output drained; safe for the host to free the session.
-    Closed   { reqid: u32 },
+    Closed { reqid: u32 },
     /// Either a session-scoped error (reqid: Some) or an instance-level
     /// failure (reqid: None) that should poison the whole instance.
-    Err      { reqid: Option<u32>, code: u32, msg: String },
+    Err {
+        reqid: Option<u32>,
+        code: u32,
+        msg: String,
+    },
 }
 
 #[derive(Debug)]
@@ -92,7 +129,9 @@ mod io {
     /// Read one length-prefixed frame from a blocking reader. Returns
     /// `Ok(None)` only on a clean EOF *between* frames; a half-frame at EOF
     /// is `Truncated`.
-    pub fn read_frame<R: Read, T: for<'de> Deserialize<'de>>(r: &mut R) -> Result<Option<T>, FrameError> {
+    pub fn read_frame<R: Read, T: for<'de> Deserialize<'de>>(
+        r: &mut R,
+    ) -> Result<Option<T>, FrameError> {
         let mut len_buf = [0u8; 4];
         match r.read_exact(&mut len_buf) {
             Ok(()) => {}
@@ -112,8 +151,9 @@ mod io {
     /// Encode + length-prefix + write one frame. Caller serializes access if
     /// multiple producers share the writer.
     pub fn write_frame<W: Write, T: Serialize>(w: &mut W, value: &T) -> std::io::Result<()> {
-        let payload = postcard::to_allocvec(value)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("postcard encode: {e:?}")))?;
+        let payload = postcard::to_allocvec(value).map_err(|e| {
+            std::io::Error::new(std::io::ErrorKind::Other, format!("postcard encode: {e:?}"))
+        })?;
         let len = u32::try_from(payload.len())
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "frame too large"))?;
         w.write_all(&len.to_le_bytes())?;
@@ -169,40 +209,50 @@ mod tests {
     fn roundtrip_open() {
         let frame = HostToSupervisor::Open {
             reqid: 42,
-            opts:  SpawnOpts {
-                argv:       std::vec!["/bin/sh".into(), "-c".into(), "echo hi".into()],
-                envp:       Some(std::vec![("PATH".into(), "/bin".into())]),
-                cwd:        Some("/tmp".into()),
-                tty:        false,
+            opts: SpawnOpts {
+                argv: std::vec!["/bin/sh".into(), "-c".into(), "echo hi".into()],
+                envp: Some(std::vec![("PATH".into(), "/bin".into())]),
+                cwd: Some("/tmp".into()),
+                tty: false,
+                size: None,
                 pipe_stdin: true,
-                arg0:       None,
+                arg0: None,
             },
         };
         let bytes = encode_frame(&frame).unwrap();
-        let (decoded, n) = try_decode_frame::<HostToSupervisor>(&bytes).unwrap().unwrap();
+        let (decoded, n) = try_decode_frame::<HostToSupervisor>(&bytes)
+            .unwrap()
+            .unwrap();
         assert_eq!(n, bytes.len());
         assert_eq!(decoded, frame);
     }
 
     #[test]
     fn partial_frame_returns_none() {
-        let frame = SupervisorToHost::Ready { protocol_version: PROTOCOL_VERSION };
+        let frame = SupervisorToHost::Ready {
+            protocol_version: PROTOCOL_VERSION,
+        };
         let bytes = encode_frame(&frame).unwrap();
         let truncated = &bytes[..bytes.len() - 1];
         let result: Option<(SupervisorToHost, usize)> = try_decode_frame(truncated).unwrap();
-        assert!(result.is_none(), "truncated frame should return Ok(None), not Err");
+        assert!(
+            result.is_none(),
+            "truncated frame should return Ok(None), not Err"
+        );
     }
 
     #[test]
     fn output_frame_seq_is_preserved() {
         let frame = SupervisorToHost::Output {
             reqid: 7,
-            seq:   123,
+            seq: 123,
             stream: Stream::Stdout,
-            bytes:  std::vec![1, 2, 3, 4, 5],
+            bytes: std::vec![1, 2, 3, 4, 5],
         };
         let bytes = encode_frame(&frame).unwrap();
-        let (decoded, _) = try_decode_frame::<SupervisorToHost>(&bytes).unwrap().unwrap();
+        let (decoded, _) = try_decode_frame::<SupervisorToHost>(&bytes)
+            .unwrap()
+            .unwrap();
         assert_eq!(decoded, frame);
     }
 }

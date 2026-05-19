@@ -10,7 +10,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use bytes::Bytes;
-use ish_embed_protocol::HostToSupervisor;
+use ish_embed_protocol::{HostToSupervisor, PtySize};
 use parking_lot::Mutex;
 use tokio::sync::{broadcast, Notify};
 
@@ -34,25 +34,36 @@ impl From<ish_embed_protocol::Stream> for Stream {
         match s {
             ish_embed_protocol::Stream::Stdout => Stream::Stdout,
             ish_embed_protocol::Stream::Stderr => Stream::Stderr,
-            ish_embed_protocol::Stream::Pty    => Stream::Pty,
+            ish_embed_protocol::Stream::Pty => Stream::Pty,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct OutputChunk {
-    pub seq:    u64,
+    pub seq: u64,
     pub stream: Stream,
-    pub bytes:  Bytes,
+    pub bytes: Bytes,
 }
 
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
-    Opened   { pid: i32 },
-    Output   { seq: u64, stream: Stream, bytes: Bytes },
-    Exited   { exit_code: i32, term_signal: i32 },
+    Opened {
+        pid: i32,
+    },
+    Output {
+        seq: u64,
+        stream: Stream,
+        bytes: Bytes,
+    },
+    Exited {
+        exit_code: i32,
+        term_signal: i32,
+    },
     Closed,
-    Failed   { message: String },
+    Failed {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,12 +76,12 @@ pub enum WriteStatus {
 
 #[derive(Debug, Default)]
 pub struct ReadOutput {
-    pub chunks:      Vec<OutputChunk>,
-    pub next_seq:    u64,
-    pub exited:      bool,
-    pub exit_code:   Option<i32>,
+    pub chunks: Vec<OutputChunk>,
+    pub next_seq: u64,
+    pub exited: bool,
+    pub exit_code: Option<i32>,
     pub term_signal: Option<i32>,
-    pub closed:      bool,
+    pub closed: bool,
     /// True iff the caller passed an `after_seq` older than what we still
     /// retain. The chunks in this response start at the current floor seq.
     pub missed_older_bytes: bool,
@@ -79,30 +90,30 @@ pub struct ReadOutput {
 #[derive(Default)]
 struct RetainedBuf {
     chunks: VecDeque<OutputChunk>,
-    bytes:  usize,
-    floor:  u64, // smallest seq we still hold
-    next:   u64, // next seq the supervisor will assign
+    bytes: usize,
+    floor: u64, // smallest seq we still hold
+    next: u64,  // next seq the supervisor will assign
 }
 
 #[derive(Default)]
 struct SessionState {
-    pid:           Option<i32>,
-    opened:        bool,
-    exited:        bool,
-    exit_code:     Option<i32>,
-    term_signal:   Option<i32>,
-    closed:        bool,
-    failure:       Option<String>,
+    pid: Option<i32>,
+    opened: bool,
+    exited: bool,
+    exit_code: Option<i32>,
+    term_signal: Option<i32>,
+    closed: bool,
+    failure: Option<String>,
 }
 
 pub struct SessionInner {
-    pub(crate) id:        SessionId,
-    pub(crate) instance:  Weak<InstanceInner>,
-    state:                Mutex<SessionState>,
-    retained:             Mutex<RetainedBuf>,
-    retained_capacity:    usize,
-    notify:               Notify,
-    events:               broadcast::Sender<SessionEvent>,
+    pub(crate) id: SessionId,
+    pub(crate) instance: Weak<InstanceInner>,
+    state: Mutex<SessionState>,
+    retained: Mutex<RetainedBuf>,
+    retained_capacity: usize,
+    notify: Notify,
+    events: broadcast::Sender<SessionEvent>,
 }
 
 impl SessionInner {
@@ -114,9 +125,9 @@ impl SessionInner {
             state: Mutex::new(SessionState::default()),
             retained: Mutex::new(RetainedBuf {
                 chunks: VecDeque::new(),
-                bytes:  0,
-                floor:  1,
-                next:   1,
+                bytes: 0,
+                floor: 1,
+                next: 1,
             }),
             retained_capacity: DEFAULT_RETAINED_BYTES,
             notify: Notify::new(),
@@ -142,7 +153,11 @@ impl SessionInner {
                 return;
             }
             buf.bytes += bytes.len();
-            buf.chunks.push_back(OutputChunk { seq, stream, bytes: bytes.clone() });
+            buf.chunks.push_back(OutputChunk {
+                seq,
+                stream,
+                bytes: bytes.clone(),
+            });
             buf.next = seq + 1;
 
             // Evict oldest chunks until we're under the cap.
@@ -155,7 +170,9 @@ impl SessionInner {
                 }
             }
         }
-        let _ = self.events.send(SessionEvent::Output { seq, stream, bytes });
+        let _ = self
+            .events
+            .send(SessionEvent::Output { seq, stream, bytes });
         self.notify.notify_waiters();
     }
 
@@ -166,7 +183,10 @@ impl SessionInner {
             s.exit_code = Some(exit_code);
             s.term_signal = Some(term_signal);
         }
-        let _ = self.events.send(SessionEvent::Exited { exit_code, term_signal });
+        let _ = self.events.send(SessionEvent::Exited {
+            exit_code,
+            term_signal,
+        });
         self.notify.notify_waiters();
     }
 
@@ -196,13 +216,13 @@ impl SessionInner {
     fn snapshot_state(&self) -> SessionState {
         let s = self.state.lock();
         SessionState {
-            pid:         s.pid,
-            opened:      s.opened,
-            exited:      s.exited,
-            exit_code:   s.exit_code,
+            pid: s.pid,
+            opened: s.opened,
+            exited: s.exited,
+            exit_code: s.exit_code,
             term_signal: s.term_signal,
-            closed:      s.closed,
-            failure:     s.failure.clone(),
+            closed: s.closed,
+            failure: s.failure.clone(),
         }
     }
 }
@@ -268,12 +288,12 @@ impl IshSession {
         let buf = self.inner.retained.lock();
         let state = self.inner.snapshot_state();
         let mut out = ReadOutput {
-            chunks:      Vec::new(),
-            next_seq:    buf.next,
-            exited:      state.exited,
-            exit_code:   state.exit_code,
+            chunks: Vec::new(),
+            next_seq: buf.next,
+            exited: state.exited,
+            exit_code: state.exit_code,
             term_signal: state.term_signal,
-            closed:      state.closed,
+            closed: state.closed,
             missed_older_bytes: false,
         };
         if after + 1 < buf.floor {
@@ -301,7 +321,11 @@ impl IshSession {
         if state.closed || state.exited {
             return Ok(WriteStatus::StdinClosed);
         }
-        let inst = self.inner.instance.upgrade().ok_or(IshError::ShuttingDown)?;
+        let inst = self
+            .inner
+            .instance
+            .upgrade()
+            .ok_or(IshError::ShuttingDown)?;
         if !state.opened {
             // The supervisor will queue Writes against an unopened reqid
             // until OPENED — but we don't currently buffer in the host;
@@ -315,13 +339,38 @@ impl IshSession {
         Ok(WriteStatus::Accepted)
     }
 
+    pub async fn resize(&self, cols: u16, rows: u16) -> Result<(), IshError> {
+        let inst = self
+            .inner
+            .instance
+            .upgrade()
+            .ok_or(IshError::ShuttingDown)?;
+        inst.send_frame(HostToSupervisor::Resize {
+            reqid: self.inner.id,
+            size: PtySize { cols, rows },
+        })
+    }
+
     pub async fn signal(&self, signum: i32) -> Result<(), IshError> {
-        let inst = self.inner.instance.upgrade().ok_or(IshError::ShuttingDown)?;
-        inst.send_frame(HostToSupervisor::Signal { reqid: self.inner.id, signum })
+        let inst = self
+            .inner
+            .instance
+            .upgrade()
+            .ok_or(IshError::ShuttingDown)?;
+        inst.send_frame(HostToSupervisor::Signal {
+            reqid: self.inner.id,
+            signum,
+        })
     }
 
     pub async fn terminate(&self) -> Result<(), IshError> {
-        let inst = self.inner.instance.upgrade().ok_or(IshError::ShuttingDown)?;
-        inst.send_frame(HostToSupervisor::Term { reqid: self.inner.id })
+        let inst = self
+            .inner
+            .instance
+            .upgrade()
+            .ok_or(IshError::ShuttingDown)?;
+        inst.send_frame(HostToSupervisor::Term {
+            reqid: self.inner.id,
+        })
     }
 }

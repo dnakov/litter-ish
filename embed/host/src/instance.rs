@@ -18,7 +18,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ish_embed_protocol::{
-    read_frame, HostToSupervisor, SpawnOpts as WireSpawnOpts, SupervisorToHost, PROTOCOL_VERSION,
+    read_frame, HostToSupervisor, PtySize, SpawnOpts as WireSpawnOpts, SupervisorToHost,
+    PROTOCOL_VERSION,
 };
 use parking_lot::Mutex;
 
@@ -49,6 +50,7 @@ pub struct SpawnOpts {
     pub envp: Option<Vec<(String, String)>>,
     pub cwd: Option<PathBuf>,
     pub tty: bool,
+    pub size: Option<PtySize>,
     pub pipe_stdin: bool,
     pub arg0: Option<String>,
 }
@@ -60,6 +62,7 @@ impl SpawnOpts {
             envp: None,
             cwd: None,
             tty: false,
+            size: None,
             pipe_stdin: false,
             arg0: None,
         }
@@ -71,6 +74,7 @@ impl SpawnOpts {
             envp: self.envp,
             cwd: self.cwd.map(|p| p.to_string_lossy().into_owned()),
             tty: self.tty,
+            size: self.size,
             pipe_stdin: self.pipe_stdin,
             arg0: self.arg0,
         }
@@ -333,6 +337,28 @@ impl IshInstance {
         Ok(Arc::new(IshSession::from_inner_arc(session_inner)))
     }
 
+    pub fn spawn_pty(
+        &self,
+        argv: &[String],
+        env: &HashMap<String, String>,
+        cwd: &Path,
+        size: PtySize,
+    ) -> Result<Arc<IshSession>, IshError> {
+        self.spawn(SpawnOpts {
+            argv: argv.to_vec(),
+            envp: Some(
+                env.iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            ),
+            cwd: Some(cwd.to_path_buf()),
+            tty: true,
+            size: Some(size),
+            pipe_stdin: false,
+            arg0: None,
+        })
+    }
+
     /// Drop-in for `codex_core::exec::set_ios_exec_hook`'s sync signature.
     pub fn run_oneshot(
         &self,
@@ -371,6 +397,7 @@ impl IshInstance {
                 envp: Some(env.iter().map(|(k, v)| (k.clone(), v.clone())).collect()),
                 cwd: Some(cwd.to_path_buf()),
                 tty: false,
+                size: None,
                 pipe_stdin: false,
                 arg0: None,
             };

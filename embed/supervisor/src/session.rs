@@ -7,6 +7,8 @@
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
+use ish_embed_protocol::PtySize;
+
 #[derive(Debug)]
 pub struct Session {
     pub reqid: u32,
@@ -66,5 +68,28 @@ impl Session {
             return Some(self.output.as_raw_fd());
         }
         None
+    }
+
+    pub fn resize_pty(&self, size: PtySize) -> std::io::Result<()> {
+        if !matches!(self.stream, ish_embed_protocol::Stream::Pty) {
+            return Ok(());
+        }
+        let winsize = libc::winsize {
+            ws_row: size.rows,
+            ws_col: size.cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let rc = unsafe {
+            libc::ioctl(
+                self.output.as_raw_fd(),
+                libc::TIOCSWINSZ as _,
+                &winsize as *const libc::winsize,
+            )
+        };
+        if rc < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
     }
 }

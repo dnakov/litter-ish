@@ -42,6 +42,7 @@ let read = session.read(Some(0), Some(64 * 1024), Some(2_000)).await?;
 //          ^^ codex's ReadParams { after_seq, max_bytes, wait_ms } shape
 
 session.write(b"some-stdin-bytes").await?;
+session.resize(100, 40).await?; // tty sessions only; no-op for pipes
 session.signal(libc::SIGINT).await?;
 session.terminate().await?;     // SIGKILL pgid
 
@@ -77,8 +78,9 @@ Set `ISH_TRACE_FRAMES=1` to dump every host↔supervisor frame to stderr.
 
 | Direction        | Op       | Payload |
 |------------------|----------|---------|
-| host → super     | `Open`   | `reqid`, `SpawnOpts { argv, envp, cwd, tty, pipe_stdin, arg0 }` |
+| host → super     | `Open`   | `reqid`, `SpawnOpts { argv, envp, cwd, tty, size, pipe_stdin, arg0 }` |
 | host → super     | `Write`  | `reqid`, `bytes` |
+| host → super     | `Resize` | `reqid`, `PtySize { cols, rows }` |
 | host → super     | `Signal` | `reqid`, `signum` |
 | host → super     | `Term`   | `reqid` (= `SIGKILL` pgid + reap) |
 | host → super     | `Shutdown` | (kills all sessions, supervisor `_exit(0)` → iSH `halt_system`) |
