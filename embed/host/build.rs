@@ -97,7 +97,15 @@ fn main() {
 
     // -- 3. Supervisor cross-build -----------------------------------------
     let supervisor_src = embed_dir.join("supervisor");
+    let protocol_src = embed_dir.join("protocol");
     emit_rerun_if_changed_recursive(&supervisor_src);
+    // The supervisor binary is `include_bytes!`d into host. The supervisor
+    // depends on `embed/protocol` via a path dep; if PROTOCOL_VERSION (or
+    // any other protocol source) changes but supervisor's own tree doesn't,
+    // Cargo would skip rerunning this build script and ship a stale binary
+    // against a newer host crate — surfacing as `supervisor protocol
+    // mismatch (host N, supervisor N-1)` at runtime. Watch protocol too.
+    emit_rerun_if_changed_recursive(&protocol_src);
     let supervisor_bin = build_supervisor(&supervisor_src, &out_dir);
 
     // Stash the binary under a stable name in OUT_DIR; lib.rs will
